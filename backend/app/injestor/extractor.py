@@ -37,7 +37,7 @@ class GroqExtractor:
 
         text = paper_analysis.get("full_text", "")
         title = paper_analysis.get("title") or "Untitled paper"
-        dataset = re.search(r"dataset[s]?\s*[:=]?\s*([A-Za-z0-9_\-/ .]+)", text, re.I)
+        dataset = re.search(r"dataset[s]?\s*[:=]?\s*([A-Za-z0-9_\-]+)", text, re.I)
         optimizer = re.search(r"optimizer\s*[:=]?\s*([A-Za-z0-9_\-]+)", text, re.I)
         lr = re.search(r"learning rate\s*[:=]?\s*([0-9]*\.?[0-9]+(?:e-?[0-9]+)?)", text, re.I)
         batch = re.search(r"batch size\s*[:=]?\s*(\d+)", text, re.I)
