@@ -19,6 +19,8 @@ update.md
 
 backend/app/data/
 
+artifacts/
+
 frontend/dist/
 frontend/.vite/
 frontend/.cache/
