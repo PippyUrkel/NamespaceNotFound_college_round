@@ -75,6 +75,8 @@ class MockDockerWorker(DockerWorker):
         config: NodeExecutionConfig | None = None,
         upstream_outputs_dir: Path | None = None,
         pip_packages: list[str] | None = None,
+        upstream_code: str | None = None,
+        **kwargs: Any,
     ) -> NodeRunResult:
         self.executed_nodes.append((node_id, seed))
         self.call_count[node_id] = self.call_count.get(node_id, 0) + 1

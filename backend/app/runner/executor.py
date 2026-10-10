@@ -179,6 +179,15 @@ class GraphExecutor:
             upstream_dir = self._work_dir / f"seed_{seed}" / "outputs"
             upstream_dir.mkdir(parents=True, exist_ok=True)
 
+            # Assemble upstream prerequisite code in topological order for chained execution
+            ancestors = self._get_ancestors(node_id, graph)
+            upstream_code_parts = [
+                f"# --- Upstream dependency: {anc_id} ---\n{node_map[anc_id].code}"
+                for anc_id in execution_order
+                if anc_id in ancestors and anc_id in node_map
+            ]
+            upstream_code = "\n\n".join(upstream_code_parts) if upstream_code_parts else None
+
             # Execute with retries
             result = self._execute_with_retries(
                 node=node,
@@ -186,6 +195,7 @@ class GraphExecutor:
                 config=node_exec_config,
                 upstream_dir=upstream_dir,
                 max_retries=node_exec_config.max_retries,
+                upstream_code=upstream_code,
             )
 
             node_results[node_id] = result
@@ -272,6 +282,7 @@ class GraphExecutor:
         config: NodeExecutionConfig,
         upstream_dir: Path,
         max_retries: int = 1,
+        upstream_code: str | None = None,
     ) -> NodeRunResult:
         """Execute a node with bounded retries for transient failures."""
         last_result: NodeRunResult | None = None
@@ -285,6 +296,7 @@ class GraphExecutor:
                 config=config,
                 upstream_outputs_dir=upstream_dir,
                 pip_packages=self._config.pip_packages,
+                upstream_code=upstream_code,
             )
 
             if result.status == RunStatus.completed:
@@ -316,6 +328,18 @@ class GraphExecutor:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _get_ancestors(self, node_id: str, graph: GraphVersion) -> set[str]:
+        """Collect all transitive upstream ancestors for a given node."""
+        node_map = {n.id: n for n in graph.nodes}
+        ancestors: set[str] = set()
+        to_visit = list(node_map[node_id].upstream) if node_id in node_map else []
+        while to_visit:
+            curr = to_visit.pop()
+            if curr not in ancestors:
+                ancestors.add(curr)
+                if curr in node_map:
+                    to_visit.extend(node_map[curr].upstream)
+        return ancestors
     def _build_adjacency(self, graph: GraphVersion) -> dict[str, list[str]]:
         adj: dict[str, list[str]] = {n.id: [] for n in graph.nodes}
         for edge in graph.edges:

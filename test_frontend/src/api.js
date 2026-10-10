@@ -76,6 +76,8 @@ export const api = {
     }
     return request(`/experiments/${id}/graph/diff${q}`);
   },
+  validateGraph: (id, verId = null) => request(`/experiments/${id}/graph/validate${verId ? `?version_id=${verId}` : ''}`),
+  remediateGraph: (id, verId = null) => request(`/experiments/${id}/graph/remediate${verId ? `?version_id=${verId}` : ''}`, { method: 'POST' }),
 
   // Feasibility
   getFeasibility: (id, verId) => request(`/experiments/${id}/feasibility${verId ? `?version_id=${verId}` : ''}`),

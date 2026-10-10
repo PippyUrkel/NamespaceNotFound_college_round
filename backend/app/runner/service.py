@@ -14,11 +14,11 @@ from typing import Any, Callable
 
 try:
     from backend.config import settings
-    from backend.app.graph.models import GraphVersion
+    from backend.app.graph.models import DAGNode, GraphVersion
     from backend.app.graph.service import GraphService
 except ModuleNotFoundError:  # pragma: no cover
     from config import settings
-    from app.graph.models import GraphVersion
+    from app.graph.models import DAGNode, GraphVersion
     from app.graph.service import GraphService
 
 from .cache import ExecutionCache
@@ -125,6 +125,25 @@ class RunnerService:
         config.docker_image = prepared_image
         if self._docker_worker:
             self._docker_worker._docker_image = prepared_image
+
+        # Validate graph sequentially and auto-remediate safe missing declarations (device, seed, imports)
+        try:
+            from backend.app.graph.validator import SequentialCodeValidator
+        except ModuleNotFoundError:  # pragma: no cover
+            from app.graph.validator import SequentialCodeValidator
+
+        val_report = SequentialCodeValidator.validate_graph(graph)
+        if not val_report.is_valid and val_report.can_auto_remediate and val_report.remediated_code_by_node:
+            new_nodes = []
+            for n in graph.nodes:
+                if n.id in val_report.remediated_code_by_node:
+                    n_copy = DAGNode.model_validate(n.model_dump())
+                    n_copy.code = val_report.remediated_code_by_node[n.id]
+                    new_nodes.append(n_copy)
+                else:
+                    new_nodes.append(n)
+            graph = GraphVersion.model_validate(graph.model_dump())
+            graph.nodes = new_nodes
 
         # Feasibility check (unless skipped)
         feasibility: FeasibilityReport | None = None

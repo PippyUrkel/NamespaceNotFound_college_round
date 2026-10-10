@@ -152,6 +152,7 @@ print(f"Environment initialized with seed={{seed}} on device={{device}} (source=
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
+seed = {seed}
 dataset_name = "{dataset_name}"
 batch_size = {batch_size}
 
@@ -189,6 +190,7 @@ import torch
 import torch.nn as nn
 
 architecture = "{architecture}"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 {repo_model_code}
 
@@ -222,6 +224,7 @@ import torch
 import torch.nn as nn
 
 architecture = "{architecture}"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class ResearchModel(nn.Module):
     def __init__(self, in_channels=3, num_classes=10):
@@ -251,6 +254,7 @@ import torch.optim as optim
 learning_rate = {lr}
 epochs = {epochs}
 optimizer_name = "{optimizer_name}"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 criterion = nn.CrossEntropyLoss()
 if optimizer_name.lower() == "sgd":
@@ -282,8 +286,10 @@ print("Training pipeline finished successfully.")
 # Depends on: training_pipeline, data_pipeline
 # Condition Provenance: metrics={metrics} (source={metrics_cond.source})
 import torch
+import torch.nn as nn
 
 metrics = {json.dumps(metrics)}
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.eval()
 
 correct = 0

@@ -13,7 +13,15 @@ except ModuleNotFoundError:  # pragma: no cover
     from config import settings
 
 from .generator import GraphCodeGenerator
-from .models import DAGEdge, DAGNode, GraphDiff, GraphVersion, TuneParameterRequest
+from .models import (
+    DAGEdge,
+    DAGNode,
+    GraphDiff,
+    GraphValidationReport,
+    GraphVersion,
+    TuneParameterRequest,
+)
+from .validator import SequentialCodeValidator
 
 
 class GraphService:
@@ -332,3 +340,60 @@ class GraphService:
             if n.id not in order:
                 order.append(n.id)
         return order
+
+    def validate_graph(
+        self,
+        experiment_id: str,
+        graph_version_id: str | None = None,
+        code_overrides: dict[str, str] | None = None,
+    ) -> GraphValidationReport:
+        """Validate DAG code blocks individually and sequentially in topological order."""
+        if graph_version_id:
+            graph = self.get_version(experiment_id, graph_version_id)
+        else:
+            graph = self.get_or_create_graph(experiment_id)
+
+        if graph is None:
+            raise ValueError(f"Experiment {experiment_id} not found.")
+
+        # If ad-hoc code overrides are provided, apply them to a temporary copy
+        if code_overrides:
+            temp_nodes: list[DAGNode] = []
+            for node in graph.nodes:
+                dump = node.model_dump()
+                if node.id in code_overrides:
+                    dump["code"] = code_overrides[node.id]
+                temp_nodes.append(DAGNode.model_validate(dump))
+            temp_graph = GraphVersion.model_validate(graph.model_dump())
+            temp_graph.nodes = temp_nodes
+            return SequentialCodeValidator.validate_graph(temp_graph)
+
+        return SequentialCodeValidator.validate_graph(graph)
+
+    def remediate_graph(
+        self,
+        experiment_id: str,
+        graph_version_id: str | None = None,
+    ) -> tuple[GraphVersion, GraphValidationReport, bool]:
+        """Validate and auto-remediate any missing symbols, device, or imports."""
+        report = self.validate_graph(experiment_id, graph_version_id)
+        current = (
+            self.get_version(experiment_id, graph_version_id)
+            if graph_version_id
+            else self.get_or_create_graph(experiment_id)
+        )
+        if current is None:
+            raise ValueError(f"Experiment {experiment_id} not found.")
+
+        if not report.remediated_code_by_node:
+            return current, report, False
+
+        # Create a new version with remediated code
+        tune_req = TuneParameterRequest(
+            code_updates=report.remediated_code_by_node,
+            change_description="Automated sequential code remediation (injected missing symbols, device, or imports)",
+        )
+        new_version = self.tune_graph(experiment_id, tune_req)
+        new_report = self.validate_graph(experiment_id, new_version.version_id)
+        return new_version, new_report, True
+

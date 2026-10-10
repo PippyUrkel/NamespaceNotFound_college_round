@@ -52,6 +52,7 @@ class DockerWorker:
         config: NodeExecutionConfig | None = None,
         upstream_outputs_dir: Path | None = None,
         pip_packages: list[str] | None = None,
+        upstream_code: str | None = None,
     ) -> NodeRunResult:
         """Run a node's code in Docker and return a structured result."""
         cfg = config or NodeExecutionConfig(node_id=node_id)
@@ -65,8 +66,14 @@ class DockerWorker:
         output_dir.mkdir(exist_ok=True)
         metrics_file = node_dir / "metrics.json"
 
-        # Build the runner script: seed injection + user code + metrics capture
-        runner_code = self._build_runner_script(code, seed, parameters, metrics_file.name)
+        # Build the runner script: seed & device injection + upstream context + user code + metrics capture
+        runner_code = self._build_runner_script(
+            code=code,
+            seed=seed,
+            parameters=parameters,
+            metrics_filename=metrics_file.name,
+            upstream_code=upstream_code,
+        )
         code_file.write_text(runner_code, encoding="utf-8")
 
         # Build pip install prefix
@@ -248,13 +255,15 @@ class DockerWorker:
         seed: int,
         parameters: dict[str, Any],
         metrics_filename: str = "metrics.json",
+        upstream_code: str | None = None,
     ) -> str:
-        """Wrap user code with deterministic seed setup and metrics capture."""
+        """Wrap user code with deterministic seed setup, device definition, and metrics capture."""
         lines = [
             "import os, sys, json, random",
             "",
-            "# === CrisisGrid seed injection (deterministic) ===",
+            "# === CrisisGrid seed & device injection (deterministic harness) ===",
             f"SEED = {seed}",
+            f"seed = {seed}",
             "os.environ['PYTHONHASHSEED'] = str(SEED)",
             "random.seed(SEED)",
             "",
@@ -271,8 +280,11 @@ class DockerWorker:
             "        torch.cuda.manual_seed_all(SEED)",
             "        torch.backends.cudnn.deterministic = True",
             "        torch.backends.cudnn.benchmark = False",
+            "    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')",
+            "    DEVICE = device",
             "except ImportError:",
-            "    pass",
+            "    device = 'cpu'",
+            "    DEVICE = 'cpu'",
             "",
             "try:",
             "    import tensorflow as tf",
@@ -297,6 +309,18 @@ class DockerWorker:
             "",
             "def report_metric(name, value):",
             "    crisisgrid_metrics[name] = float(value)",
+        ])
+
+        # Prepend upstream code context if provided
+        if upstream_code and upstream_code.strip():
+            lines.extend([
+                "",
+                "# === Upstream Chained Execution Context ===",
+                upstream_code.strip(),
+                "",
+            ])
+
+        lines.extend([
             "",
             "# === User code ===",
             code,

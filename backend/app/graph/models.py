@@ -85,3 +85,41 @@ class GraphDiff(BaseModel):
     parameter_changes: dict[str, dict[str, Any]] = Field(default_factory=dict)
     code_changes: dict[str, dict[str, str]] = Field(default_factory=dict)
     modified_nodes: list[str] = Field(default_factory=list)
+
+
+class ValidationIssue(BaseModel):
+    node_id: str
+    node_name: str
+    severity: Literal["error", "warning", "info"] = "error"
+    category: Literal[
+        "undefined_symbol",
+        "syntax_error",
+        "missing_import",
+        "dependency_order_violation",
+        "scope_isolation_gap",
+    ] = "undefined_symbol"
+    symbol: str | None = None
+    line_number: int | None = None
+    message: str
+    suggested_fix: str | None = None
+
+
+class NodeScopeSummary(BaseModel):
+    node_id: str
+    defined_symbols: list[str] = Field(default_factory=list)
+    referenced_symbols: list[str] = Field(default_factory=list)
+    imported_modules: list[str] = Field(default_factory=list)
+    missing_symbols: list[str] = Field(default_factory=list)
+
+
+class GraphValidationReport(BaseModel):
+    is_valid: bool
+    can_auto_remediate: bool = True
+    total_errors: int = 0
+    total_warnings: int = 0
+    issues: list[ValidationIssue] = Field(default_factory=list)
+    node_scopes: dict[str, NodeScopeSummary] = Field(default_factory=dict)
+    sequential_execution_valid: bool = True
+    sequential_simulation_error: str | None = None
+    remediated_code_by_node: dict[str, str] = Field(default_factory=dict)
+

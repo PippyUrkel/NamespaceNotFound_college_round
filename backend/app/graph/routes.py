@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
-from .models import GraphDiff, GraphVersion, TuneParameterRequest
+from .models import GraphDiff, GraphValidationReport, GraphVersion, TuneParameterRequest
 from .service import GraphService
 
 router = APIRouter(prefix="/experiments", tags=["graph"])
@@ -17,6 +17,59 @@ def get_experiment_graph(experiment_id: str) -> GraphVersion:
     if graph is None:
         raise HTTPException(status_code=404, detail="Experiment not found")
     return graph
+
+
+@router.get("/{experiment_id}/graph/validate", response_model=GraphValidationReport)
+def validate_experiment_graph_get(
+    experiment_id: str,
+    version_id: str | None = Query(default=None),
+) -> GraphValidationReport:
+    """Validate graph AST syntax and sequential variable flow in topological order."""
+    try:
+        return service.validate_graph(experiment_id, graph_version_id=version_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Graph validation failed: {exc}") from exc
+
+
+@router.post("/{experiment_id}/graph/validate", response_model=GraphValidationReport)
+def validate_experiment_graph_post(
+    experiment_id: str,
+    payload: dict[str, Any] | None = None,
+    version_id: str | None = Query(default=None),
+) -> GraphValidationReport:
+    """Validate graph with optional ad-hoc node code overrides."""
+    code_overrides = (payload or {}).get("code_overrides") if payload else None
+    try:
+        return service.validate_graph(
+            experiment_id,
+            graph_version_id=version_id,
+            code_overrides=code_overrides,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Graph validation failed: {exc}") from exc
+
+
+@router.post("/{experiment_id}/graph/remediate")
+def remediate_experiment_graph(
+    experiment_id: str,
+    version_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """Auto-remediate missing symbols (device, seed, imports, fallbacks) into a new graph version."""
+    try:
+        new_ver, report, remediated = service.remediate_graph(experiment_id, graph_version_id=version_id)
+        return {
+            "version": new_ver,
+            "report": report,
+            "remediated": remediated,
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Graph remediation failed: {exc}") from exc
 
 
 @router.post("/{experiment_id}/graph/generate", response_model=GraphVersion)

@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   GitFork, Sliders, History, Code2, Copy, Check, ArrowRight, 
-  ExternalLink, Layers, Sparkles, CheckCircle2 
+  ExternalLink, Layers, Sparkles, CheckCircle2, AlertTriangle, 
+  Wrench, ShieldCheck, RefreshCw 
 } from 'lucide-react';
 import { api } from '../api';
 
@@ -18,6 +19,49 @@ export default function GraphTab({
   const [copiedCode, setCopiedCode] = useState(false);
   const [showTuneModal, setShowTuneModal] = useState(false);
   const [showDiffModal, setShowDiffModal] = useState(false);
+
+  // Validation state
+  const [validationReport, setValidationReport] = useState(null);
+  const [validating, setValidating] = useState(false);
+  const [remediating, setRemediating] = useState(false);
+  const [showIssuesList, setShowIssuesList] = useState(true);
+
+  // Auto-validate on graph/version change
+  useEffect(() => {
+    if (experimentId && graph?.version_id) {
+      handleValidate(graph.version_id);
+    }
+  }, [experimentId, graph?.version_id]);
+
+  async function handleValidate(verId = null) {
+    setValidating(true);
+    try {
+      const rep = await api.validateGraph(experimentId, verId || graph?.version_id);
+      setValidationReport(rep);
+    } catch (err) {
+      console.error('Validation error:', err);
+    } finally {
+      setValidating(false);
+    }
+  }
+
+  async function handleRemediate() {
+    setRemediating(true);
+    try {
+      const res = await api.remediateGraph(experimentId, graph?.version_id);
+      if (res.remediated) {
+        if (onRefreshGraph) onRefreshGraph();
+        if (onVersionChange) onVersionChange(res.version.version_id);
+        setValidationReport(res.report);
+      } else {
+        alert('No auto-remediations required for this graph version.');
+      }
+    } catch (err) {
+      alert('Remediation failed: ' + err.message);
+    } finally {
+      setRemediating(false);
+    }
+  }
 
   // Tune form state
   const [tuneParams, setTuneParams] = useState({
@@ -121,7 +165,16 @@ export default function GraphTab({
           </span>
         </div>
 
-        <div style={{ display: 'flex', gap: '0.6rem' }}>
+        <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
+          <button 
+            className="btn btn-secondary btn-sm"
+            onClick={() => handleValidate()}
+            disabled={validating}
+            title="Perform static AST analysis and verify sequential symbol flow"
+          >
+            <RefreshCw size={14} className={validating ? 'spin' : ''} />
+            {validating ? 'Validating...' : 'Validate Code'}
+          </button>
           <button 
             className="btn btn-secondary btn-sm" 
             onClick={() => {
@@ -129,16 +182,121 @@ export default function GraphTab({
               handleLoadDiff();
             }}
           >
-            <History size={14} /> Compare Versions (Diff)
+            <History size={14} /> Diff
           </button>
           <button 
             className="btn btn-primary btn-sm" 
             onClick={() => setShowTuneModal(true)}
           >
-            <Sliders size={14} /> Tune Parameters & Create Version
+            <Sliders size={14} /> Tune Parameters
           </button>
         </div>
       </div>
+
+      {/* Sequential Code Validation Banner */}
+      {validationReport && (
+        <div 
+          className="card" 
+          style={{ 
+            borderColor: validationReport.is_valid ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.5)',
+            background: validationReport.is_valid ? 'rgba(16, 185, 129, 0.05)' : 'rgba(239, 68, 68, 0.06)',
+            padding: '1rem 1.25rem',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '0.75rem',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+              {validationReport.is_valid ? (
+                <ShieldCheck size={20} color="var(--accent-green)" />
+              ) : (
+                <AlertTriangle size={20} color="var(--accent-red)" />
+              )}
+              <span style={{ fontWeight: 600, fontSize: '0.92rem' }}>
+                {validationReport.is_valid 
+                  ? 'Sequential Code Validation: Verified' 
+                  : `Code Flow Validation: ${validationReport.total_errors} Error(s), ${validationReport.total_warnings} Warning(s)`}
+              </span>
+              <span className={`badge ${validationReport.is_valid ? 'badge-green' : 'badge-red'}`} style={{ fontSize: '0.72rem' }}>
+                {validationReport.is_valid ? 'PASSED' : 'ACTION REQUIRED'}
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              {!validationReport.is_valid && validationReport.can_auto_remediate && (
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={handleRemediate}
+                  disabled={remediating}
+                  style={{ background: 'var(--accent-amber)', color: '#000', fontWeight: 600 }}
+                >
+                  <Wrench size={14} />
+                  {remediating ? 'Auto-Remediating...' : 'Auto-Remediate / Fix Code'}
+                </button>
+              )}
+              <button 
+                className="btn btn-secondary btn-sm" 
+                onClick={() => setShowIssuesList(!showIssuesList)}
+                style={{ fontSize: '0.75rem' }}
+              >
+                {showIssuesList ? 'Hide Details' : 'Show Details'}
+              </button>
+            </div>
+          </div>
+
+          {!validationReport.is_valid && showIssuesList && validationReport.issues?.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.25rem' }}>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                The following variables or constructs would cause runtime crashes if executed sequentially:
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', maxHeight: '220px', overflowY: 'auto' }}>
+                {validationReport.issues.map((issue, idx) => (
+                  <div 
+                    key={idx}
+                    style={{
+                      background: 'rgba(0, 0, 0, 0.3)',
+                      padding: '0.6rem 0.8rem',
+                      borderRadius: '6px',
+                      borderLeft: `3px solid ${issue.severity === 'error' ? 'var(--accent-red)' : 'var(--accent-amber)'}`,
+                      fontSize: '0.8rem',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.25rem',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{ fontWeight: 600, color: '#fff' }}>
+                        Node: <code style={{ color: 'var(--accent-cyan)' }}>{issue.node_id}</code>
+                        {issue.line_number && <span style={{ color: 'var(--text-dim)', marginLeft: '0.5rem' }}>Line {issue.line_number}</span>}
+                      </span>
+                      <div style={{ display: 'flex', gap: '0.4rem' }}>
+                        <span className={`badge ${issue.severity === 'error' ? 'badge-red' : 'badge-amber'}`} style={{ fontSize: '0.68rem' }}>
+                          {issue.category}
+                        </span>
+                        {issue.symbol && (
+                          <span className="badge badge-blue" style={{ fontSize: '0.68rem', fontFamily: 'var(--font-mono)' }}>
+                            symbol: {issue.symbol}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{ color: 'var(--text-main)' }}>{issue.message}</div>
+                    {issue.suggested_fix && (
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                        <span style={{ color: 'var(--accent-green)' }}>Suggested Fix:</span>
+                        <code style={{ background: 'rgba(255,255,255,0.06)', padding: '2px 6px', borderRadius: '4px' }}>
+                          {issue.suggested_fix}
+                        </code>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Main DAG Grid Layout */}
       <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.8fr', gap: '1.25rem' }}>

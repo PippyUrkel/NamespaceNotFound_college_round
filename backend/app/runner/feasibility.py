@@ -99,6 +99,25 @@ class FeasibilityChecker:
                 else:
                     warnings.append(f"Dataset '{ds.name}' availability could not be confirmed.")
 
+        # Code validation check (sequential flow and AST analysis)
+        try:
+            from backend.app.graph.validator import SequentialCodeValidator
+        except ModuleNotFoundError:  # pragma: no cover
+            from app.graph.validator import SequentialCodeValidator
+
+        val_report = SequentialCodeValidator.validate_graph(graph)
+        if not val_report.is_valid:
+            for issue in val_report.issues:
+                if issue.severity == "error":
+                    reasons.append(
+                        f"Code validation error in '{issue.node_id}' line {issue.line_number or '?'}: "
+                        f"{issue.message} (Suggested fix: {issue.suggested_fix or 'None'})"
+                    )
+                else:
+                    warnings.append(
+                        f"Code validation warning in '{issue.node_id}': {issue.message}"
+                    )
+
         # Determine verdict
         if reasons:
             verdict = FeasibilityVerdict.blocked
