@@ -12,6 +12,13 @@ from backend.app.injestor.service import IngestionService
 
 def test_repository_url_validation_accepts_github_urls() -> None:
     assert RepositoryInspector.validate_url("https://github.com/octocat/hello-world") == "https://github.com/octocat/hello-world"
+    assert RepositoryInspector.validate_url("github.com/octocat/hello-world") == "https://github.com/octocat/hello-world"
+    assert RepositoryInspector.validate_url("https://github.com/octocat/hello-world.") == "https://github.com/octocat/hello-world"
+    assert RepositoryInspector.validate_url("www.github.com/octocat/hello-world") == "https://github.com/octocat/hello-world"
+    assert RepositoryInspector.validate_url("git@github.com:octocat/hello-world.git") == "https://github.com/octocat/hello-world"
+    assert RepositoryInspector.validate_url("https://facebookresearch.github.io/detectron2") == "https://github.com/facebookresearch/detectron2"
+    assert RepositoryInspector.validate_url("https://gitlab.com/user/project") == "https://gitlab.com/user/project"
+    assert RepositoryInspector.validate_url("https://github.com\u200b/octocat/hello-world") == "https://github.com/octocat/hello-world"
 
 
 def test_repository_url_validation_rejects_non_github_urls() -> None:
@@ -23,6 +30,12 @@ def test_pdf_parser_handles_non_pdf_input_without_crashing() -> None:
     result = PDFParser.parse_upload(b"not a real pdf", "notes.txt")
     assert result["hash_sha256"]
     assert "full_text" in result
+
+
+def test_pdf_parser_extracts_repo_url_from_content() -> None:
+    content = b"Paper text. Code available at github.com/octocat/hello-world. Method details..."
+    result = PDFParser.parse_upload(content, "paper.pdf")
+    assert result["repo_url"] == "https://github.com/octocat/hello-world"
 
 
 def test_specification_service_builds_json_spec() -> None:

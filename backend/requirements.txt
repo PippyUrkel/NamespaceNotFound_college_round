@@ -1,4 +1,4 @@
-docling
+pypdf2>=3.0.1
 
 fastapi
 uvicorn[standard]

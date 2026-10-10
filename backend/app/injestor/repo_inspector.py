@@ -11,18 +11,78 @@ from git import Repo
 class RepositoryInspector:
     @staticmethod
     def validate_url(repo_url: str) -> str:
-        parsed = urlparse(repo_url.strip())
-        if parsed.scheme not in {"http", "https"}:
+        if not repo_url or not isinstance(repo_url, str):
             raise ValueError("Repository URL must use http or https.")
-        if parsed.netloc.lower() not in {"github.com", "www.github.com"}:
-            raise ValueError("Only public GitHub repositories are supported.")
-        parts = [p for p in parsed.path.split("/") if p]
+
+        # Strip invisible zero-width chars and collapse excessive whitespace
+        clean = re.sub(r"[\u200b\u200c\u200d\ufeff\u200e\u200f]", "", repo_url)
+        clean = re.sub(r"[\xa0\s]+", " ", clean).strip()
+        clean = clean.strip("`'\"<>[]{}() \t\n\r")
+        clean = re.sub(r"[.,;:!?)'\"]+$", "", clean)
+
+        # Handle SSH format like git@github.com:owner/repo(.git)
+        ssh_match = re.match(
+            r"^(?:ssh://)?git@([A-Za-z0-9_.-]+)[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$",
+            clean,
+        )
+        if ssh_match:
+            host, owner, repo = ssh_match.groups()
+            return f"https://{host}/{owner}/{repo}"
+
+        # Handle git:// or git+https:// schemes
+        if clean.startswith(("git://", "git+https://", "git+http://")):
+            clean = re.sub(r"^git(?:\+https?|\+ssh)?://", "https://", clean)
+
+        # If scheme is missing, default to https://
+        if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", clean):
+            clean = f"https://{clean}"
+
+        parsed = urlparse(clean)
+        if parsed.scheme.lower() not in {"http", "https"}:
+            raise ValueError("Repository URL must use http or https.")
+
+        hostname = (parsed.hostname or "").lower().rstrip(".")
+        if not hostname:
+            raise ValueError("Repository URL must include a valid host.")
+
+        # Handle GitHub Pages: <owner>.github.io/<repo>
+        gh_pages = re.match(r"^([a-z0-9\-]+)\.github\.io$", hostname)
+        if gh_pages:
+            owner = gh_pages.group(1)
+            path_parts = [p.strip() for p in parsed.path.split("/") if p.strip()]
+            if not path_parts:
+                raise ValueError("Repository URL must include owner and repo name.")
+            repo_name = path_parts[0].removesuffix(".git")
+            repo_name = re.sub(r"[.,;:!?)'\"]+$", "", repo_name)
+            return f"https://github.com/{owner}/{repo_name}"
+
+        allowed_hosts = {
+            "github.com",
+            "www.github.com",
+            "gitlab.com",
+            "www.gitlab.com",
+            "bitbucket.org",
+            "www.bitbucket.org",
+            "huggingface.co",
+            "www.huggingface.co",
+            "codeberg.org",
+            "www.codeberg.org",
+        }
+        if hostname not in allowed_hosts:
+            raise ValueError("Only public Git repositories (e.g. GitHub, GitLab, Hugging Face, Bitbucket) are supported.")
+
+        main_host = hostname.removeprefix("www.")
+        parts = [p.strip() for p in parsed.path.split("/") if p.strip()]
         if len(parts) < 2:
             raise ValueError("Repository URL must include owner and repo name.")
+
+        owner = parts[0]
         repo_name = parts[1].removesuffix(".git")
+        repo_name = re.sub(r"[.,;:!?)'\"]+$", "", repo_name)
         if not repo_name:
             raise ValueError("Repository name is missing.")
-        return f"https://github.com/{parts[0]}/{repo_name}"
+
+        return f"https://{main_host}/{owner}/{repo_name}"
 
     @staticmethod
     def inspect(repo_url: str, branch: str | None = None, commit_ref: str | None = None) -> dict:

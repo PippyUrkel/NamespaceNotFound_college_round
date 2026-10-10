@@ -1,35 +1,45 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import re
-import tempfile
-from pathlib import Path
+from typing import Any
 
-from docling.document_converter import DocumentConverter
+import warnings
+
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", category=DeprecationWarning)
+    try:
+        from PyPDF2 import PdfReader
+    except ImportError:  # pragma: no cover
+        try:
+            from pypdf import PdfReader
+        except ImportError:  # pragma: no cover
+            PdfReader = None
+
+try:
+    from backend.app.injestor.repo_inspector import RepositoryInspector
+except ModuleNotFoundError:  # pragma: no cover
+    from app.injestor.repo_inspector import RepositoryInspector
 
 
 class PDFParser:
     @staticmethod
-    def parse_upload(file_bytes: bytes, filename: str) -> dict:
+    def parse_upload(file_bytes: bytes, filename: str) -> dict[str, Any]:
         pdf_sha256 = hashlib.sha256(file_bytes).hexdigest()
-        temp_file = Path(tempfile.NamedTemporaryFile(suffix=".pdf", delete=False).name)
-        temp_file.write_bytes(file_bytes)
         full_text = ""
-        try:
+
+        if PdfReader is not None:
             try:
-                converter = DocumentConverter()
-                result = converter.convert(str(temp_file))
-                document = getattr(result, "document", None)
-                if document is not None:
-                    export_fn = getattr(document, "export_to_markdown", None)
-                    if callable(export_fn):
-                        full_text = str(export_fn()) or ""
-                    if not full_text:
-                        full_text = str(getattr(document, "text", "") or "")
+                reader = PdfReader(io.BytesIO(file_bytes))
+                page_texts = []
+                for page in reader.pages:
+                    txt = page.extract_text() or ""
+                    if txt.strip():
+                        page_texts.append(txt.strip())
+                full_text = "\n\n".join(page_texts).strip()
             except Exception:
                 pass
-        finally:
-            temp_file.unlink(missing_ok=True)
 
         if not full_text:
             full_text = file_bytes.decode("utf-8", errors="ignore") or f"Uploaded file: {filename}"
@@ -37,12 +47,27 @@ class PDFParser:
         title = PDFParser._extract_title(full_text) or filename
         abstract = PDFParser._extract_abstract(full_text)
         sections = PDFParser._extract_sections(full_text)
+        repo_url = PDFParser._extract_repo_url(full_text)
+
+        if repo_url:
+            print(f"[PDFParser] Parsed GitHub repository URL from {filename}: {repo_url}", flush=True)
+        else:
+            print(f"[PDFParser] No GitHub repository URL found in {filename}", flush=True)
+
         evidence = [{
             "source": "paper",
             "section": "document",
             "file_path": filename,
             "exact_text": (abstract or title or full_text[:200]),
         }]
+        if repo_url:
+            evidence.append({
+                "source": "paper",
+                "section": "code_availability",
+                "file_path": filename,
+                "exact_text": f"Found repository URL: {repo_url}",
+            })
+
         return {
             "title": title,
             "abstract": abstract,
@@ -51,7 +76,28 @@ class PDFParser:
             "hash_sha256": pdf_sha256,
             "evidence": evidence,
             "filename": filename,
+            "repo_url": repo_url,
         }
+
+    @staticmethod
+    def _extract_repo_url(text: str) -> str | None:
+        if not text:
+            return None
+        # Unfold lines wrapped across newlines (e.g., in two-column formatting)
+        unfolded = re.sub(
+            r"((?:https?://)?(?:www\.)?(?:github\.com|gitlab\.com|bitbucket\.org|huggingface\.co|codeberg\.org|[A-Za-z0-9_.-]+\.github\.io)(?:/[A-Za-z0-9_.-]+)*/?)\s*\n\s*",
+            r"\1",
+            text,
+            flags=re.IGNORECASE,
+        )
+        pattern = r"(?:https?://)?(?:www\.)?(?:github\.com|gitlab\.com|bitbucket\.org|huggingface\.co|codeberg\.org|[A-Za-z0-9_.-]+\.github\.io)/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
+        for match in re.finditer(pattern, unfolded, flags=re.IGNORECASE):
+            candidate = match.group(0)
+            try:
+                return RepositoryInspector.validate_url(candidate)
+            except ValueError:
+                continue
+        return None
 
     @staticmethod
     def _extract_title(text: str) -> str | None:

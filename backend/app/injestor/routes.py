@@ -40,15 +40,31 @@ async def ingest_experiment(
         paper_analysis = PDFParser.parse_upload(file_bytes, file.filename)
 
     repo_analysis: dict[str, Any] | None = None
+    explicit_repo_url = bool(repo_url and repo_url.strip())
+    if explicit_repo_url:
+        print(f"[Backend Ingest] Provided repository URL from form: {repo_url}", flush=True)
+    elif paper_analysis.get("repo_url"):
+        repo_url = paper_analysis.get("repo_url")
+        print(f"[Backend Ingest] Using auto-parsed repository URL from research paper: {repo_url}", flush=True)
+    else:
+        print("[Backend Ingest] No repository URL provided or parsed from research paper.", flush=True)
+
     normalized_repo_url = repo_url
-    if repo_url:
+    if repo_url and repo_url.strip():
         try:
             normalized_repo_url = RepositoryInspector.validate_url(repo_url)
+            print(f"[Backend Ingest] Validated repository URL: {normalized_repo_url}", flush=True)
             repo_analysis = RepositoryInspector.inspect(normalized_repo_url, branch=branch, commit_ref=commit_ref)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            print(f"[Backend Ingest] Repository validation failed: {exc}", flush=True)
+            if explicit_repo_url:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            normalized_repo_url = None
         except Exception as exc:
-            raise HTTPException(status_code=422, detail=f"Repository inspection failed: {exc}") from exc
+            print(f"[Backend Ingest] Repository inspection failed: {exc}", flush=True)
+            if explicit_repo_url:
+                raise HTTPException(status_code=422, detail=f"Repository inspection failed: {exc}") from exc
+            normalized_repo_url = None
 
     spec = service.build(paper_analysis, repo_analysis, repo_url=normalized_repo_url)
     return {
