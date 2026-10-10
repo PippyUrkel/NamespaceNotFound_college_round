@@ -38,6 +38,24 @@ def test_pdf_parser_extracts_repo_url_from_content() -> None:
     assert result["repo_url"] == "https://github.com/octocat/hello-world"
 
 
+def test_pdf_parser_prefers_normal_text_retrieval_over_ocr() -> None:
+    pdf_content = (
+        b"%PDF-1.4\n"
+        b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
+        b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+        b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n"
+        b"4 0 obj << /Length 200 >> stream\n"
+        b"BT\n/F1 12 Tf\n100 700 Td\n(This is a test research paper on machine learning reproducible experiments using PyTorch and CIFAR-10 dataset with Adam optimizer.) Tj\nET\n"
+        b"endstream\nendobj\n"
+        b"5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n"
+        b"xref\n0 6\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \n0000000244 00000 n \n0000000495 00000 n \n"
+        b"trailer << /Size 6 /Root 1 0 R >>\nstartxref\n574\n%%EOF\n"
+    )
+    result = PDFParser.parse_upload(pdf_content, "sample.pdf")
+    assert result["extraction_method"] == "text_retrieval"
+    assert "CIFAR-10" in result["full_text"]
+
+
 def test_specification_service_builds_json_spec() -> None:
     paper = {
         "title": "Demo research paper",
