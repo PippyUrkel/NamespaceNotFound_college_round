@@ -1,8 +1,13 @@
-from __future__ import annotations
-
+import json
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+
+try:
+    from backend.config import settings
+except ModuleNotFoundError:  # pragma: no cover
+    from config import settings
 
 from .parser import PDFParser
 from .repo_inspector import RepositoryInspector
@@ -10,6 +15,30 @@ from .service import IngestionService
 
 router = APIRouter(prefix="/experiments", tags=["experiments"])
 service = IngestionService()
+
+
+@router.get("")
+def list_experiments() -> list[dict[str, Any]]:
+    exp_dir = Path(settings.artifacts_dir) / "experiments"
+    if not exp_dir.exists():
+        return []
+    results = []
+    for d in sorted(exp_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+        if d.is_dir():
+            spec_file = d / "experiment_spec.json"
+            if spec_file.exists():
+                try:
+                    spec = json.loads(spec_file.read_text(encoding="utf-8"))
+                    results.append({
+                        "experiment_id": spec.get("experiment_id", d.name),
+                        "title": spec.get("title", "Untitled"),
+                        "dataset": spec.get("dataset"),
+                        "status": spec.get("status"),
+                        "created_at": spec.get("created_at"),
+                    })
+                except Exception:
+                    results.append({"experiment_id": d.name})
+    return results
 
 
 @router.get("/{experiment_id}")

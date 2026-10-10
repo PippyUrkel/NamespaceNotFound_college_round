@@ -627,3 +627,24 @@ def test_runner_api_endpoints(test_env, monkeypatch) -> None:
     # 10. Nonexistent execution
     nonexistent = client.get(f"/experiments/{exp_id}/executions/nonexistent_id")
     assert nonexistent.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Test 12: Environment Manager Package Detection and Pre-Installation
+# ---------------------------------------------------------------------------
+def test_environment_manager_detects_packages_and_prepares_image(test_env) -> None:
+    graph = test_env["graph"]
+    # 1. Detect required packages from graph
+    pkgs = EnvironmentManager.detect_required_packages(graph)
+    assert "torch" in pkgs
+    assert "numpy" in pkgs
+
+    # 2. Check resolution
+    resolved = EnvironmentManager.resolve_dependencies(pkgs)
+    assert any(d.name == "torch" for d in resolved)
+    assert any(d.name == "numpy" for d in resolved)
+
+    # 3. Prepare image returns pre-baked or prepared image tag
+    image = EnvironmentManager.prepare_image(pkgs)
+    assert "crisisgrid" in image
+

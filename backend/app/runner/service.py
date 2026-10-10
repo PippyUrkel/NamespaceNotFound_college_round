@@ -108,6 +108,24 @@ class RunnerService:
         )
         config.seeds = seeds
 
+        # Detect required dependencies from graph code and spec
+        spec = self._graph_service._load_spec(experiment_id)
+        required_pkgs = EnvironmentManager.detect_required_packages(
+            graph=graph,
+            spec=spec,
+            explicit_packages=config.pip_packages,
+        )
+        config.pip_packages = required_pkgs
+
+        # Ensure all dependencies are installed in Docker image BEFORE containers start executing
+        prepared_image = EnvironmentManager.prepare_image(
+            packages=required_pkgs,
+            base_image=config.docker_image,
+        )
+        config.docker_image = prepared_image
+        if self._docker_worker:
+            self._docker_worker._docker_image = prepared_image
+
         # Feasibility check (unless skipped)
         feasibility: FeasibilityReport | None = None
         if not request.skip_feasibility:
@@ -294,6 +312,15 @@ class RunnerService:
         if not seeds_to_run:
             return manifest
 
+        # Ensure dependencies image is prepared before resuming
+        prepared_image = EnvironmentManager.prepare_image(
+            packages=manifest.config.pip_packages,
+            base_image=manifest.config.docker_image,
+        )
+        manifest.config.docker_image = prepared_image
+        if self._docker_worker:
+            self._docker_worker._docker_image = prepared_image
+
         # Set up executor
         work_dir = self._get_work_dir(experiment_id, execution_id)
         cache_dir = self._artifacts_dir / "experiments" / experiment_id / "cache"
@@ -357,6 +384,6 @@ class RunnerService:
         return graph
 
     def _get_work_dir(self, experiment_id: str, execution_id: str) -> Path:
-        d = self._artifacts_dir / "experiments" / experiment_id / "executions" / execution_id / "work"
+        d = (self._artifacts_dir / "experiments" / experiment_id / "executions" / execution_id / "work").resolve()
         d.mkdir(parents=True, exist_ok=True)
         return d

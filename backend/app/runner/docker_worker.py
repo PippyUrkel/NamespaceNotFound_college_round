@@ -36,7 +36,7 @@ class DockerWorker:
         work_dir: Path,
         docker_image: str = "python:3.11-slim",
     ) -> None:
-        self._work_dir = work_dir
+        self._work_dir = Path(work_dir).resolve()
         self._work_dir.mkdir(parents=True, exist_ok=True)
         self._docker_image = docker_image
 
@@ -57,11 +57,11 @@ class DockerWorker:
         cfg = config or NodeExecutionConfig(node_id=node_id)
         started_at = datetime.now(timezone.utc).isoformat()
 
-        # Prepare workspace
-        node_dir = self._work_dir / f"node_{node_id}_seed_{seed}"
+        # Prepare workspace (always resolve to absolute paths for Docker host mounts)
+        node_dir = (self._work_dir / f"node_{node_id}_seed_{seed}").resolve()
         node_dir.mkdir(parents=True, exist_ok=True)
         code_file = node_dir / "run.py"
-        output_dir = node_dir / "output"
+        output_dir = (node_dir / "output").resolve()
         output_dir.mkdir(exist_ok=True)
         metrics_file = node_dir / "metrics.json"
 
@@ -196,23 +196,27 @@ class DockerWorker:
         pip_install_cmd: str = "",
     ) -> list[str]:
         container_name = f"crisisgrid_{config.node_id}_{seed}"
+        node_dir_abs = Path(node_dir).resolve()
+        output_dir_abs = Path(output_dir).resolve()
+        network_mode = "bridge" if pip_install_cmd else "none"
+
         cmd = [
             "docker", "run",
             "--rm",
             "--name", container_name,
             f"--memory={config.memory_limit_mb}m",
             f"--cpus={config.cpu_limit}",
-            "--network=none",  # No network for security
+            f"--network={network_mode}",
             "-e", f"PYTHONHASHSEED={seed}",
             "-e", f"CRISISGRID_SEED={seed}",
-            "-v", f"{node_dir}:/workspace",
-            "-v", f"{output_dir}:/workspace/output",
+            "-v", f"{node_dir_abs}:/workspace",
+            "-v", f"{output_dir_abs}:/workspace/output",
             "-w", "/workspace",
         ]
 
-        # Mount upstream outputs if available
-        if upstream_outputs_dir and upstream_outputs_dir.exists():
-            cmd.extend(["-v", f"{upstream_outputs_dir}:/workspace/upstream:ro"])
+        # Mount upstream outputs if available (always resolve to absolute path)
+        if upstream_outputs_dir and Path(upstream_outputs_dir).exists():
+            cmd.extend(["-v", f"{Path(upstream_outputs_dir).resolve()}:/workspace/upstream:ro"])
 
         # Inject node-level environment
         for k, v in config.environment.items():
