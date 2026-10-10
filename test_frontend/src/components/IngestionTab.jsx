@@ -58,7 +58,7 @@ export default function IngestionTab({ spec, conditionProvenance, discrepancies 
 
   return (
     <div className="ingestion-workspace">
-      <header className="ingestion-heading">
+      {/* <header className="ingestion-heading">
         <div>
           <p className="ingestion-eyebrow">SOURCE INTAKE / 01</p>
           <h2>Research ingestion</h2>
@@ -68,7 +68,7 @@ export default function IngestionTab({ spec, conditionProvenance, discrepancies 
           <span className="ingestion-heading__status-dot" />
           <span>{status.replaceAll('_', ' ')}</span>
         </div>
-      </header>
+      </header> */}
 
       <section className="ingestion-overview">
         <article className="ingestion-source-card ingestion-source-card--paper">
