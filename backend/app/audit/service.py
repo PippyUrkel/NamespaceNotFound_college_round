@@ -12,16 +12,24 @@ except ModuleNotFoundError:  # pragma: no cover
 
 try:
     from backend.app.injestor.service import IngestionService
+    from backend.app.runner.results_collector import ResultsCollector
 except ModuleNotFoundError:  # pragma: no cover
     from app.injestor.service import IngestionService
+    from app.runner.results_collector import ResultsCollector
 
 from .context import build_context
 from .engine import run_audit
 from .llm_checks import check_ambiguous_claims
 from .models import Finding, RunSummary
 from .scoring import score as score_findings
+from .verification import run_summaries_from_execution, verify_claims
+
 
 class ExperimentNotFound(Exception):
+    pass
+
+
+class ExecutionNotFound(Exception):
     pass
 
 
@@ -61,19 +69,82 @@ class AuditService:
 
     def run_llm(self, experiment_id: str) -> dict[str, Any]:
         spec = self._load_spec(experiment_id)
+        if not settings.groq_api_key:
+            # Nothing is persisted, so the report still lists the LLM checks as not run.
+            return {"experiment_id": experiment_id, "status": "skipped", "reason": "GROQ_API_KEY is not configured"}
         context = build_context(spec)
         findings = check_ambiguous_claims(context)
         result = self._build_result(experiment_id, "static", findings)
         self._write(experiment_id, "audit_llm.json", result)
         return result
 
-    def run_run_phase(self, experiment_id: str, run_summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    def run_run_phase(
+        self,
+        experiment_id: str,
+        run_summaries: list[dict[str, Any]] | None = None,
+        *,
+        execution_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Audit reproduction results against the paper's claims.
+
+        With explicit `run_summaries`, those are used as-is. Otherwise the summaries are built from the
+        runner's execution manifest (`execution_id`, or the latest execution) and the claimed results
+        extracted at ingestion.
+        """
         spec = self._load_spec(experiment_id)
-        context = build_context(spec, run_summaries=[RunSummary(**item) for item in run_summaries])
+        execution_limitations: list[dict[str, Any]] = []
+        if run_summaries is None:
+            summaries, execution_id, execution_limitations = self._summaries_from_execution(spec, execution_id)
+        else:
+            summaries = [RunSummary(**item) for item in run_summaries]
+
+        context = build_context(spec, run_summaries=summaries)
         findings = run_audit(context, "run")
         result = self._build_result(experiment_id, "run", findings)
+        result["execution_id"] = execution_id
+        result["run_summaries"] = [s.model_dump() for s in summaries]
+        result["claim_verification"] = verify_claims(summaries)
+        result["execution_limitations"] = execution_limitations
         self._write(experiment_id, "audit_run.json", result)
         return result
+
+    def _summaries_from_execution(
+        self, spec: dict[str, Any], execution_id: str | None
+    ) -> tuple[list[RunSummary], str, list[dict[str, Any]]]:
+        experiment_id = spec["experiment_id"]
+        collector = ResultsCollector(self.artifacts_dir)
+        execution_id = execution_id or collector.get_latest_execution_id(experiment_id)
+        manifest = collector.load_manifest(experiment_id, execution_id) if execution_id else None
+        if manifest is None:
+            raise ExecutionNotFound(experiment_id)
+
+        evidence = collector.build_run_evidence(manifest)
+        summaries = run_summaries_from_execution(
+            spec.get("claimed_results") or [],
+            evidence.get("aggregated_metrics") or [],
+            execution_id=manifest.execution_id,
+            used_assumed_values=self._graph_uses_assumed_values(experiment_id, manifest.graph_version_id),
+        )
+        return summaries, manifest.execution_id, evidence.get("execution_limitations") or []
+
+    def _graph_uses_assumed_values(self, experiment_id: str, version_id: str) -> bool:
+        try:
+            from backend.app.graph.service import GraphService
+        except ModuleNotFoundError:  # pragma: no cover
+            from app.graph.service import GraphService
+        try:
+            graph = GraphService(artifacts_dir=self.artifacts_dir).get_version(experiment_id, version_id)
+        except Exception:
+            return False
+        if graph is None:
+            return False
+        return any(
+            isinstance(cond, dict) and cond.get("is_assumed")
+            for cond in (graph.condition_provenance or {}).values()
+        )
+
+    def latest_execution_id(self, experiment_id: str) -> str | None:
+        return ResultsCollector(self.artifacts_dir).get_latest_execution_id(experiment_id)
 
     def get_audit(self, experiment_id: str) -> dict[str, Any] | None:
         static = self._read(experiment_id, "audit_static.json")
@@ -93,6 +164,7 @@ class AuditService:
             "static": static,
             "llm": llm,
             "run": run,
+            "claim_verification": (run or {}).get("claim_verification"),
             "findings": all_findings,
             "risk_score": risk.model_dump(),
         }
@@ -109,4 +181,4 @@ class AuditService:
         }
 
 
-__all__ = ["AuditService", "ExperimentNotFound"]
+__all__ = ["AuditService", "ExperimentNotFound", "ExecutionNotFound"]

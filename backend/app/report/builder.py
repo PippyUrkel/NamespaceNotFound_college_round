@@ -15,6 +15,14 @@ STATUS_ORDER = {"confirmed": 0, "possible": 1}
 
 NOT_VERIFIABLE = "Not verifiable"
 PENDING_VERIFICATION = "Pending verification"
+REPRODUCIBLE = "Reproducible"
+NOT_REPRODUCIBLE = "Not reproducible"
+
+_CLAIM_VERDICTS = {
+    "reproducible": REPRODUCIBLE,
+    "not_reproducible": NOT_REPRODUCIBLE,
+    "not_verifiable": NOT_VERIFIABLE,
+}
 
 
 def _is_missing(value: Any) -> bool:
@@ -42,12 +50,23 @@ def _verdict(spec: dict[str, Any], audit: dict[str, Any] | None) -> dict[str, An
     has_runs = bool(audit and audit.get("run"))
     if not has_runs:
         reasons.append("No reproduction runs have been performed.")
+    verification = _claim_verification(audit)
     if reasons:
-        return {"status": NOT_VERIFIABLE, "reasons": reasons}
+        # Missing critical fields mean the run used assumed values, so its outcome cannot settle the claim.
+        return {"status": NOT_VERIFIABLE, "reasons": reasons + (verification or {}).get("reasons", [])}
+    if verification:
+        return {
+            "status": _CLAIM_VERDICTS.get(verification.get("overall"), NOT_VERIFIABLE),
+            "reasons": list(verification.get("reasons") or []),
+        }
     return {
         "status": PENDING_VERIFICATION,
         "reasons": ["Reproduction runs exist, but no verification verdict has been computed yet."],
     }
+
+
+def _claim_verification(audit: dict[str, Any] | None) -> dict[str, Any] | None:
+    return ((audit or {}).get("run") or {}).get("claim_verification")
 
 
 def _sorted_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -64,13 +83,18 @@ def _limitations(spec: dict[str, Any], audit: dict[str, Any] | None, withheld: i
         items.append("No code repository was available, so repository checks were skipped.")
     elif not repo.get("files"):
         items.append("A repository URL was given but no repository files were inspected, so repository checks are unreliable.")
-    if not spec.get("full_text"):
+    if not spec.get("full_text") and not (spec.get("paper") or {}).get("full_text"):
         items.append("The full paper text is not stored; text-based checks ran on evidence excerpts only and may miss issues.")
     items.append("Field sources are inferred: the ingested spec does not record per-field provenance yet.")
     if not audit or not audit.get("llm"):
         items.append("LLM checks (ambiguous metrics, missing baselines, leakage hints) were not run.")
     if not audit or not audit.get("run"):
         items.append("No run-phase audit: reproduced results have not been compared with the paper's claims.")
+    elif not spec.get("claimed_results"):
+        items.append("No numeric results were extracted from the paper, so reproduced metrics could not be compared with claims.")
+    for limitation in ((audit or {}).get("run") or {}).get("execution_limitations") or []:
+        if limitation.get("detail"):
+            items.append(f"Execution: {limitation['detail']}")
     if withheld:
         items.append(f"{withheld} finding(s) were withheld because they had no evidence.")
     return items
@@ -92,6 +116,7 @@ def build_report(spec: dict[str, Any], audit: dict[str, Any] | None) -> dict[str
         "ingested_at": spec.get("created_at"),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "verdict": _verdict(spec, audit),
+        "claim_verification": _claim_verification(audit),
         "configuration": _configuration(spec),
         "feasibility": spec.get("validation") or {},
         "discrepancies": [d for d in spec.get("discrepancies") or [] if d.get("status") != "match"],
@@ -150,6 +175,28 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.append("No audit has been run.")
     lines.append("")
 
+    verification = report.get("claim_verification")
+    if verification and verification.get("claims"):
+        lines += [
+            "## Claim verification",
+            "",
+            f"A claim counts as reproduced when the reproduced mean is within {verification['tolerance']:.0%} of the paper's value.",
+            "",
+            "| Metric | Claimed | Reproduced (mean ± std) | Gap | Verdict |",
+            "|---|---|---|---|---|",
+        ]
+        for claim in verification["claims"]:
+            reproduced = "—"
+            if claim.get("reproduced_mean") is not None:
+                reproduced = f"{claim['reproduced_mean']:.4g}"
+                if claim.get("reproduced_std") is not None:
+                    reproduced += f" ± {claim['reproduced_std']:.2g}"
+                reproduced += f" ({claim.get('seeds_run', 0)} seed(s))"
+            gap = f"{claim['gap']:.1%}" if claim.get("gap") is not None else "—"
+            verdict = _CLAIM_VERDICTS.get(claim.get("verdict"), NOT_VERIFIABLE)
+            lines.append(f"| {_cell(claim.get('metric'))} | {claim.get('claimed_value'):g} | {reproduced} | {gap} | {verdict} |")
+        lines.append("")
+
     lines += ["## Experiment configuration", "", "| Field | Value | Source |", "|---|---|---|"]
     for row in report["configuration"]:
         name = row["field"] + (" *" if row["critical"] else "")
@@ -181,4 +228,11 @@ def render_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["build_report", "render_markdown", "NOT_VERIFIABLE", "PENDING_VERIFICATION"]
+__all__ = [
+    "build_report",
+    "render_markdown",
+    "NOT_VERIFIABLE",
+    "PENDING_VERIFICATION",
+    "REPRODUCIBLE",
+    "NOT_REPRODUCIBLE",
+]

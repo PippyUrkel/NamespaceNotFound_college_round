@@ -137,15 +137,31 @@ def _ingest(tmp_path) -> str:
     return spec["experiment_id"]
 
 
-def test_service_runs_static_audit_when_missing_and_persists(tmp_path) -> None:
+def test_service_runs_static_audit_when_missing_and_persists(tmp_path, monkeypatch) -> None:
+    from backend.config import settings
+
+    monkeypatch.setattr(settings, "groq_api_key", "")
     experiment_id = _ingest(tmp_path)
     service = ReportService(artifacts_dir=tmp_path)
 
     report = service.generate(experiment_id)
     assert report["risk_score"] is not None
     assert any(f["rule_id"] == "no_code_available" for f in report["findings"])
+    assert any("LLM checks" in item for item in report["limitations"])
     assert service.get(experiment_id)["experiment_id"] == experiment_id
     assert service.get_markdown(experiment_id).startswith("# Reproducibility report: Demo paper")
+
+
+def test_service_runs_llm_check_when_missing(tmp_path, monkeypatch) -> None:
+    from backend.app.audit import service as audit_service_module
+    from backend.config import settings
+
+    monkeypatch.setattr(settings, "groq_api_key", "test-key")
+    monkeypatch.setattr(audit_service_module, "check_ambiguous_claims", lambda context: [])
+    experiment_id = _ingest(tmp_path)
+
+    report = ReportService(artifacts_dir=tmp_path).generate(experiment_id)
+    assert not any("LLM checks" in item for item in report["limitations"])
 
 
 def test_service_raises_for_unknown_experiment(tmp_path) -> None:
@@ -177,3 +193,41 @@ def test_report_routes_end_to_end(tmp_path, monkeypatch) -> None:
     assert "## Findings" in response.text
 
     assert client.post("/experiments/missing-id/report").status_code == 404
+
+
+def _verified_audit(overall: str, verdict: str) -> dict:
+    audit = _audit([], run=True)
+    audit["run"]["claim_verification"] = {
+        "overall": overall,
+        "tolerance": 0.1,
+        "reasons": [f"accuracy {verdict}"],
+        "claims": [
+            {"metric": "accuracy", "claimed_value": 91.2, "reproduced_mean": 90.1, "reproduced_std": 0.5,
+             "seeds_run": 3, "gap": 0.012, "verdict": verdict},
+        ],
+    }
+    return audit
+
+
+def test_verdict_reproducible_when_claims_within_tolerance() -> None:
+    from backend.app.report.builder import REPRODUCIBLE
+
+    report = build_report(SPEC, _verified_audit("reproducible", "reproducible"))
+    assert report["verdict"]["status"] == REPRODUCIBLE
+    markdown = render_markdown(report)
+    assert "## Claim verification" in markdown
+    assert "within 10%" in markdown
+
+
+def test_verdict_not_reproducible_when_claim_outside_tolerance() -> None:
+    from backend.app.report.builder import NOT_REPRODUCIBLE
+
+    report = build_report(SPEC, _verified_audit("not_reproducible", "not_reproducible"))
+    assert report["verdict"]["status"] == NOT_REPRODUCIBLE
+
+
+def test_missing_critical_fields_keep_not_verifiable_even_with_claim_verification() -> None:
+    spec = {**SPEC, "dataset": None}
+    report = build_report(spec, _verified_audit("reproducible", "reproducible"))
+    assert report["verdict"]["status"] == NOT_VERIFIABLE
+    assert "accuracy reproducible" in report["verdict"]["reasons"]

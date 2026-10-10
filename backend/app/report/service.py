@@ -10,10 +10,10 @@ except ModuleNotFoundError:  # pragma: no cover
     from config import settings
 
 try:
-    from backend.app.audit.service import AuditService, ExperimentNotFound
+    from backend.app.audit.service import AuditService, ExecutionNotFound, ExperimentNotFound
     from backend.app.injestor.service import IngestionService
 except ModuleNotFoundError:  # pragma: no cover
-    from app.audit.service import AuditService, ExperimentNotFound
+    from app.audit.service import AuditService, ExecutionNotFound, ExperimentNotFound
     from app.injestor.service import IngestionService
 
 from .builder import build_report, render_markdown
@@ -35,9 +35,18 @@ class ReportService:
         if spec is None:
             raise ExperimentNotFound(experiment_id)
         audit = self.audit_service.get_audit(experiment_id)
-        if audit is None:
+        if audit is None or audit.get("static") is None:
             self.audit_service.run_static(experiment_id)
-            audit = self.audit_service.get_audit(experiment_id)
+        if audit is None or audit.get("llm") is None:
+            self.audit_service.run_llm(experiment_id)
+        latest_execution = self.audit_service.latest_execution_id(experiment_id)
+        audited_execution = ((audit or {}).get("run") or {}).get("execution_id")
+        if latest_execution and latest_execution != audited_execution:
+            try:
+                self.audit_service.run_run_phase(experiment_id, execution_id=latest_execution)
+            except ExecutionNotFound:
+                pass
+        audit = self.audit_service.get_audit(experiment_id)
 
         report = build_report(spec, audit)
         directory = self._experiment_dir(experiment_id)

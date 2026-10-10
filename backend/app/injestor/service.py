@@ -70,11 +70,13 @@ class IngestionService:
             "seed": extracted.get("seed"),
             "metrics": extracted.get("metrics", []),
             "architecture": extracted.get("architecture"),
+            "claimed_results": extracted.get("claimed_results") or [],
             "evidence": (paper_analysis.get("evidence", []) or []) + ((repo_analysis or {}).get("evidence", []) or []),
             "discrepancies": discrepancies,
             "artifact_path": str(artifact_dir / "experiment_spec.json"),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "validation": {**feasibility, "dag_valid": dag_validation["valid"]},
+            "paper": paper_analysis,
             "repo": repo_analysis,
             "dag": dag,
             "vector_index": pinecone_status,
@@ -82,6 +84,16 @@ class IngestionService:
         }
         spec_path = artifact_dir / "experiment_spec.json"
         spec_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+        try:
+            try:
+                from backend.app.graph.service import GraphService
+            except ModuleNotFoundError:  # pragma: no cover
+                from app.graph.service import GraphService
+            GraphService(self.artifacts_dir).generate_graph(experiment_id)
+        except Exception as exc:
+            print(f"[IngestionService] Graph initialization warning: {exc}", flush=True)
+
         return result
 
     @staticmethod

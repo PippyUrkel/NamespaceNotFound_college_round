@@ -366,3 +366,172 @@ def test_audit_routes_end_to_end(tmp_path, monkeypatch) -> None:
 
     response = client.get("/experiments/missing-id/audit")
     assert response.status_code == 404
+
+
+# --- Claim verification (10% reproducibility tolerance) -----------------------------------------
+
+from backend.app.audit.verification import (  # noqa: E402
+    REPRODUCIBILITY_TOLERANCE,
+    run_summaries_from_execution,
+    verify_claims,
+)
+
+
+def test_tolerance_is_ten_percent() -> None:
+    assert REPRODUCIBILITY_TOLERANCE == 0.10
+
+
+def test_claim_within_ten_percent_is_reproducible_including_boundary() -> None:
+    result = verify_claims(
+        [
+            RunSummary(metric="accuracy", claimed_value=90.0, reproduced_mean=81.0, seeds_run=3),  # exactly 10%
+            RunSummary(metric="f1", claimed_value=0.80, reproduced_mean=0.85, seeds_run=3),
+        ]
+    )
+    assert [c["verdict"] for c in result["claims"]] == ["reproducible", "reproducible"]
+    assert result["overall"] == "reproducible"
+
+
+def test_claim_beyond_ten_percent_is_not_reproducible() -> None:
+    result = verify_claims(
+        [
+            RunSummary(metric="accuracy", claimed_value=90.0, reproduced_mean=80.9, seeds_run=3),
+            RunSummary(metric="f1", claimed_value=0.80, reproduced_mean=0.80, seeds_run=3),
+        ]
+    )
+    assert result["claims"][0]["verdict"] == "not_reproducible"
+    assert result["overall"] == "not_reproducible"
+
+
+def test_beyond_tolerance_raises_run_finding_but_boundary_does_not() -> None:
+    within = clean_context(run_summaries=[RunSummary(metric="accuracy", claimed_value=90.0, reproduced_mean=81.0, seeds_run=3)])
+    beyond = clean_context(run_summaries=[RunSummary(metric="accuracy", claimed_value=90.0, reproduced_mean=80.0, seeds_run=3)])
+    assert run_audit(within, "run") == []
+    assert [f.rule_id for f in run_audit(beyond, "run")] == ["reproduced_mean_far_from_claim:accuracy"]
+
+
+def test_claim_without_reproduced_metric_is_not_verifiable() -> None:
+    result = verify_claims([RunSummary(metric="bleu", claimed_value=27.3, reproduced_mean=None, seeds_run=0)])
+    assert result["claims"][0]["verdict"] == "not_verifiable"
+    assert result["overall"] == "not_verifiable"
+
+
+def test_no_claims_is_not_verifiable() -> None:
+    assert verify_claims([])["overall"] == "not_verifiable"
+
+
+def test_run_summaries_pair_claims_with_runner_metrics_and_align_scale() -> None:
+    summaries = run_summaries_from_execution(
+        [
+            {"metric": "top-1-accuracy", "value": 91.2, "exact_text": "We reach 91.2% top-1 accuracy."},
+            {"metric": "F1-score", "value": 0.88},
+            {"metric": "bleu", "value": 27.3},
+        ],
+        [
+            {"metric_name": "accuracy", "mean": 0.905, "std": 0.004, "num_completed": 3},
+            {"metric_name": "f1", "mean": 87.0, "std": 1.0, "num_completed": 3},
+        ],
+        execution_id="exec_1",
+    )
+    by_metric = {s.metric: s for s in summaries}
+    assert by_metric["top-1-accuracy"].reproduced_mean == pytest.approx(90.5)
+    assert by_metric["top-1-accuracy"].reproduced_std == pytest.approx(0.4)
+    assert by_metric["top-1-accuracy"].claim_quote == "We reach 91.2% top-1 accuracy."
+    assert by_metric["F1-score"].reproduced_mean == pytest.approx(0.87)
+    assert by_metric["bleu"].reproduced_mean is None
+    assert all(s.execution_id == "exec_1" for s in summaries)
+
+
+def _write_spec(tmp_path, experiment_id: str, claimed_results: list[dict]) -> None:
+    import json
+
+    directory = tmp_path / "experiments" / experiment_id
+    directory.mkdir(parents=True)
+    spec = {
+        "experiment_id": experiment_id,
+        "dataset": "CIFAR-10",
+        "optimizer": "Adam",
+        "learning_rate": 0.001,
+        "batch_size": 64,
+        "epochs": 10,
+        "seed": 42,
+        "metrics": ["accuracy"],
+        "architecture": "ResNet-18",
+        "claimed_results": claimed_results,
+        "paper": {"full_text": CLEAN_PAPER_TEXT},
+        "repository_url": "https://github.com/demo/project",
+        "repo": {"files": {"requirements.txt": "torch==2.1.0\n", "train.py": "torch.manual_seed(42)\n"}},
+        "evidence": [],
+        "discrepancies": [],
+    }
+    (directory / "experiment_spec.json").write_text(json.dumps(spec), encoding="utf-8")
+
+
+def _write_execution(tmp_path, experiment_id: str, execution_id: str, accuracies: list[float]) -> None:
+    from backend.app.runner.models import ExecutionManifest, RunStatus, SeedRun, SeedRunMetrics
+    from backend.app.runner.results_collector import ResultsCollector
+
+    manifest = ExecutionManifest(
+        execution_id=execution_id,
+        experiment_id=experiment_id,
+        graph_version_id="v1",
+        graph_hash="hash",
+        seed_runs=[
+            SeedRun(seed=seed, status=RunStatus.completed, metrics=SeedRunMetrics(values={"accuracy": acc}))
+            for seed, acc in zip([42, 123, 7], accuracies)
+        ],
+    )
+    ResultsCollector(tmp_path).finalize_manifest(manifest)
+
+
+def test_run_phase_reads_latest_execution_and_verifies_claims(tmp_path) -> None:
+    _write_spec(tmp_path, "exp-run", [{"metric": "accuracy", "value": 91.2, "exact_text": "mean accuracy 91.2"}])
+    _write_execution(tmp_path, "exp-run", "exec_ok", [90.0, 89.0, 91.0])
+
+    service = AuditService(artifacts_dir=tmp_path)
+    result = service.run_run_phase("exp-run")
+    assert result["execution_id"] == "exec_ok"
+    assert result["claim_verification"]["overall"] == "reproducible"
+    assert result["findings"] == []
+
+    _write_execution(tmp_path, "exp-run", "exec_bad", [70.0, 71.0, 72.0])
+    result = service.run_run_phase("exp-run")
+    assert result["execution_id"] == "exec_bad"
+    assert result["claim_verification"]["overall"] == "not_reproducible"
+    finding = result["findings"][0]
+    assert finding["rule_id"] == "reproduced_mean_far_from_claim:accuracy"
+    assert {e["source"] for e in finding["evidence"]} == {"paper", "run"}
+    assert service.get_audit("exp-run")["claim_verification"]["overall"] == "not_reproducible"
+
+
+def test_run_phase_without_execution_raises(tmp_path) -> None:
+    from backend.app.audit.service import ExecutionNotFound
+
+    _write_spec(tmp_path, "exp-none", [])
+    with pytest.raises(ExecutionNotFound):
+        AuditService(artifacts_dir=tmp_path).run_run_phase("exp-none")
+
+
+def test_run_phase_route_without_body_uses_execution(tmp_path, monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    from backend.app.audit import routes as audit_routes
+    from backend.app.main import app
+
+    monkeypatch.setattr(audit_routes, "service", AuditService(artifacts_dir=tmp_path))
+    _write_spec(tmp_path, "exp-route", [{"metric": "accuracy", "value": 91.2}])
+    client = TestClient(app)
+
+    assert client.post("/experiments/exp-route/audit/run").status_code == 404
+
+    _write_execution(tmp_path, "exp-route", "exec_1", [90.0, 90.5, 91.0])
+    response = client.post("/experiments/exp-route/audit/run")
+    assert response.status_code == 200
+    assert response.json()["claim_verification"]["overall"] == "reproducible"
+
+    response = client.post(
+        "/experiments/exp-route/audit/run",
+        json=[{"metric": "accuracy", "claimed_value": 91.2, "reproduced_mean": 60.0, "seeds_run": 3}],
+    )
+    assert response.status_code == 200
+    assert response.json()["claim_verification"]["overall"] == "not_reproducible"

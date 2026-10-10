@@ -51,6 +51,8 @@ def build_context(
     repo_dependencies = list((repo or {}).get("dependencies") or [])
 
     if not paper_text:
+        paper_text = str((spec.get("paper") or {}).get("full_text") or "")
+    if not paper_text:
         paper_text = "\n".join(
             str(item.get("exact_text"))
             for item in (spec.get("evidence") or [])

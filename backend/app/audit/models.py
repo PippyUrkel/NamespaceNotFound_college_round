@@ -52,6 +52,8 @@ class RunSummary(BaseModel):
     reproduced_std: float | None = None
     seeds_run: int = 0
     used_assumed_values: bool = False
+    claim_quote: str | None = None
+    execution_id: str | None = None
 
 
 class AuditContext(BaseModel):

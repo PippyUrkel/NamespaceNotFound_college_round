@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .models import AuditContext, Evidence, Finding, Phase
+from .verification import REPRODUCIBILITY_TOLERANCE, relative_gap, within_tolerance
 
 RuleFunc = Callable[..., list[Finding]]
 
@@ -281,7 +282,6 @@ def no_code_available(context: AuditContext) -> list[Finding]:
     ]
 
 
-_GAP_THRESHOLD = 0.10
 _CRITICAL_GAP_THRESHOLD = 0.30
 
 
@@ -291,25 +291,28 @@ def reproduced_mean_far_from_claim(context: AuditContext) -> list[Finding]:
     for run in context.run_summaries:
         if run.claimed_value is None or run.reproduced_mean is None:
             continue
-        denom = abs(run.claimed_value) if run.claimed_value else 1e-9
-        gap = abs(run.reproduced_mean - run.claimed_value) / denom
-        if gap <= _GAP_THRESHOLD:
+        gap = relative_gap(run.claimed_value, run.reproduced_mean)
+        if within_tolerance(gap):
             continue
         message = (
-            f"Reproduced {run.metric} ({run.reproduced_mean}) differs from the claimed value "
-            f"({run.claimed_value}) by {gap:.1%}, over {run.seeds_run} seed(s)."
+            f"Reproduced {run.metric} ({run.reproduced_mean:.4g}) differs from the claimed value "
+            f"({run.claimed_value:g}) by {gap:.1%}, over {run.seeds_run} seed(s); results within "
+            f"{REPRODUCIBILITY_TOLERANCE:.0%} of the claim count as reproduced."
         )
         if run.used_assumed_values:
             message += " This run used assumed configuration values, so the gap may reflect assumptions rather than the original setup."
+        evidence = [Evidence(source="run", section=run.execution_id, exact_text=message)]
+        if run.claim_quote:
+            evidence.insert(0, Evidence(source="paper", exact_text=run.claim_quote))
         findings.append(
             Finding(
                 rule_id=f"reproduced_mean_far_from_claim:{run.metric}",
                 phase="run",
                 severity="critical" if gap > _CRITICAL_GAP_THRESHOLD else "high",
                 status="confirmed",
-                title=f"Reproduced result diverges from claim for {run.metric}",
+                title=f"Not reproducible: {run.metric} diverges from the paper's claim",
                 message=message,
-                evidence=[Evidence(source="run", exact_text=message)],
+                evidence=evidence,
                 remediation="Re-check the configuration used for reproduction against the paper, or mark the claim as not verified.",
             )
         )
