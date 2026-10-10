@@ -89,20 +89,13 @@ gap: 15px;
 padding: 20px;
 border: 1px solid var(--fg-border);
 border-radius: 9px;
-background: var(--fg-surface);
+background: rgba(255, 113, 132, 0.075);
 position: relative;
 overflow: hidden;
 }
 
 .feasibility-verdict::before {
-content: '';
-position: absolute;
-left: 0;
-top: 0;
-bottom: 0;
-width: 3px;
-background: currentColor;
-opacity: .9;
+display: none;
 }
 
 .feasibility-verdict--success { color: var(--fg-green); }

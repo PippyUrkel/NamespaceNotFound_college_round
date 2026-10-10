@@ -1,5 +1,6 @@
-
 import React, { useEffect, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   ShieldAlert, ShieldCheck, FileText, Play, RefreshCw, Download,
   CheckCircle2, XCircle, HelpCircle, AlertTriangle, Scale,
@@ -40,7 +41,6 @@ function evidenceLabel(evidence) {
     evidence.page_number ? `page ${evidence.page_number}` : null,
     evidence.url,
   ].filter(Boolean).join(', ');
-
   return `${evidence.source || 'Evidence'}${location ? ` (${location})` : ''}`;
 }
 
@@ -65,6 +65,9 @@ export default function AuditTab({ experimentId, latestExecution }) {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [includeLlm, setIncludeLlm] = useState(true);
+  const [reportMarkdown, setReportMarkdown] = useState('');
+  const [markdownLoading, setMarkdownLoading] = useState(false);
+  const [markdownError, setMarkdownError] = useState('');
 
   useEffect(() => {
     setAudit(null);
@@ -73,6 +76,52 @@ export default function AuditTab({ experimentId, latestExecution }) {
     loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [experimentId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadMarkdown() {
+      if (!report) {
+        setReportMarkdown('');
+        setMarkdownError('');
+        return;
+      }
+
+      setMarkdownLoading(true);
+      setMarkdownError('');
+
+      try {
+        const response = await fetch(api.getReportMarkdownUrl(experimentId), {
+          headers: { Accept: 'text/markdown, text/plain;q=0.9, */*;q=0.1' },
+          credentials: 'same-origin',
+        });
+
+        if (!response.ok) {
+          throw new Error(`Report preview request failed (${response.status}).`);
+        }
+
+        const markdown = await response.text();
+        if (!cancelled) {
+          // Avoid showing an HTML error page as if it were a Markdown report.
+          const looksLikeHtml = /^\s*<!doctype html|^\s*<html[\s>]/i.test(markdown);
+          if (looksLikeHtml) {
+            throw new Error('The report endpoint returned HTML instead of Markdown.');
+          }
+          setReportMarkdown(markdown);
+        }
+      } catch (exception) {
+        if (!cancelled) {
+          setReportMarkdown('');
+          setMarkdownError(exception?.message || 'Could not load the Markdown preview.');
+        }
+      } finally {
+        if (!cancelled) setMarkdownLoading(false);
+      }
+    }
+
+    loadMarkdown();
+    return () => { cancelled = true; };
+  }, [experimentId, report?.generated_at, report?.verdict?.status]);
 
   async function loadAll() {
     try {
@@ -91,7 +140,6 @@ export default function AuditTab({ experimentId, latestExecution }) {
   async function run(label, action) {
     setBusy(label);
     setError('');
-
     try {
       await action();
       await loadAll();
@@ -121,15 +169,12 @@ export default function AuditTab({ experimentId, latestExecution }) {
             <span className="audit-live-dot" />
             VALIDATION / REPORTING
           </div>
-
-          <h2>Audit &amp; <span>report.</span></h2>
-
+          <h2>Audit & <span>report.</span></h2>
           <p>
             Evaluate paper claims against reproduced results and inspect
             the evidence behind every finding.
           </p>
         </div>
-
         <div className="audit-intro-mark" aria-hidden="true">
           <ShieldCheck size={28} />
           <span>CG / AUDIT</span>
@@ -249,7 +294,6 @@ export default function AuditTab({ experimentId, latestExecution }) {
             <span className="audit-verdict-icon">
               <VerdictIcon size={25} />
             </span>
-
             <div>
               <h3>{verdict ? verdict.status : 'Report not generated'}</h3>
               <p>
@@ -297,7 +341,6 @@ export default function AuditTab({ experimentId, latestExecution }) {
                   }}
                 />
               </div>
-
               <div className="audit-risk-footer">
                 <span>Risk score</span>
                 <strong className={`audit-risk-${risk.bucket || 'medium'}`}>
@@ -359,12 +402,10 @@ export default function AuditTab({ experimentId, latestExecution }) {
                   <th>Verdict</th>
                 </tr>
               </thead>
-
               <tbody>
                 {verification.claims.map((claim, index) => {
                   const [tone, label] =
                     CLAIM_BADGES[claim.verdict] || CLAIM_BADGES.not_verifiable;
-
                   return (
                     <tr key={`${claim.metric || 'metric'}-${index}`}>
                       <td className="audit-metric-cell">
@@ -375,13 +416,11 @@ export default function AuditTab({ experimentId, latestExecution }) {
                           </p>
                         )}
                       </td>
-
                       <td>
                         <span className="audit-number">
                           {fmt(claim.claimed_value)}
                         </span>
                       </td>
-
                       <td>
                         <span className="audit-number">
                           {fmt(claim.reproduced_mean)}
@@ -393,7 +432,6 @@ export default function AuditTab({ experimentId, latestExecution }) {
                           {claim.seeds_run ?? 0} seed(s)
                         </span>
                       </td>
-
                       <td>
                         <span className="audit-number">
                           {claim.gap != null
@@ -401,7 +439,6 @@ export default function AuditTab({ experimentId, latestExecution }) {
                             : '—'}
                         </span>
                       </td>
-
                       <td>
                         <span className={`audit-chip audit-chip-${tone}`}>
                           {label}
@@ -463,7 +500,6 @@ export default function AuditTab({ experimentId, latestExecution }) {
                 key={`${finding.title || 'finding'}-${index}`}
               >
                 <div className="audit-finding-accent" />
-
                 <div className="audit-finding-body">
                   <div className="audit-finding-topline">
                     <span
@@ -518,6 +554,89 @@ export default function AuditTab({ experimentId, latestExecution }) {
           </div>
         )}
       </section>
+
+      {report && (
+        <section className="audit-panel audit-report-panel">
+          <div className="audit-report-toolbar">
+            <div className="audit-report-heading">
+              <span className="audit-section-icon"><FileText size={17} /></span>
+              <div>
+                <div className="audit-eyebrow">GENERATED DOCUMENT / MARKDOWN</div>
+                <h3>Audit report</h3>
+                <p>
+                  Rendered preview of the generated report. The original
+                  Markdown remains available to download.
+                </p>
+              </div>
+            </div>
+            <div className="audit-report-actions">
+              <span className="audit-report-format">.MD SOURCE</span>
+              <button
+                className="audit-btn audit-btn-secondary"
+                type="button"
+                onClick={() => window.print()}
+                disabled={!reportMarkdown.trim() || markdownLoading}
+                title="Open the print dialog, then choose Save as PDF"
+              >
+                <FileText size={14} /> Export PDF
+              </button>
+              <a
+                className="audit-btn audit-btn-secondary"
+                href={api.getReportMarkdownUrl(experimentId)}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <Download size={14} /> Download source
+              </a>
+            </div>
+          </div>
+
+          <div className="audit-report-reader">
+            {markdownLoading ? (
+              <div className="audit-report-state">
+                <RefreshCw size={17} className="audit-spin" />
+                <span>Loading report preview…</span>
+              </div>
+            ) : markdownError ? (
+              <div className="audit-report-state audit-report-state--error" role="status">
+                <AlertTriangle size={17} />
+                <div>
+                  <strong>Preview unavailable</strong>
+                  <p>{markdownError}</p>
+                  <p>The report can still be opened or downloaded using the source link above.</p>
+                </div>
+              </div>
+            ) : reportMarkdown.trim() ? (
+              <article className="audit-markdown">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    a: ({ node, ...props }) => (
+                      <a {...props} target="_blank" rel="noreferrer" />
+                    ),
+                    pre: ({ children, ...props }) => <pre {...props}>{children}</pre>,
+                    table: ({ children, ...props }) => (
+                      <div className="audit-markdown-table-wrap">
+                        <table {...props}>{children}</table>
+                      </div>
+                    ),
+                  }}
+                >
+                  {reportMarkdown}
+                </ReactMarkdown>
+              </article>
+            ) : (
+              <div className="audit-report-state">
+                <FileText size={18} />
+                <div>
+                  <strong>No Markdown content returned</strong>
+                  <p>Generate the report again or open the original source file.</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
 
       {report?.limitations?.length > 0 && (
         <section className="audit-panel audit-section-panel">

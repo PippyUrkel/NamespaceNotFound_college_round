@@ -340,7 +340,7 @@ export default function RunnerTab({
                 <>
                   <Play size={15} fill="currentColor" />
                   Launch execution
-                  <Sparkles size={14} />
+                  {/* <Sparkles size={14} /> */}
                 </>
               )}
             </button>

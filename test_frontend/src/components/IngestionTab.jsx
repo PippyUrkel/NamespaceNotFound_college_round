@@ -121,7 +121,7 @@ export default function IngestionTab({ spec, conditionProvenance, discrepancies 
         </article>
       </section>
 
-      {discrepancies?.length > 0 && (
+      {/* {discrepancies?.length > 0 && (
         <section className="ingestion-discrepancies">
           <div className="ingestion-discrepancies__heading">
             <span className="ingestion-discrepancies__icon"><ShieldAlert size={18} /></span>
@@ -140,7 +140,7 @@ export default function IngestionTab({ spec, conditionProvenance, discrepancies 
             ))}
           </ul>
         </section>
-      )}
+      )} */}
 
       <section className="ingestion-panel">
         <header className="ingestion-panel__header">

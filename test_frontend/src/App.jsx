@@ -278,10 +278,10 @@ export default function App() {
           <button className="btn btn-secondary header-ingest" onClick={handleStartIngestion}>
             <Plus size={15} /> <span>Ingest paper</span>
           </button>
-          <button className="btn btn-primary" onClick={handleQuickDemo} disabled={demoLoading}>
+          {/* <button className="btn btn-primary" onClick={handleQuickDemo} disabled={demoLoading}>
             <Sparkles size={15} />
             <span>{demoLoading ? 'Preparing demo…' : 'Quick demo'}</span>
-          </button>
+          </button> */}
           <button
             className="mobile-menu-button"
             onClick={() => setMobileNavOpen((open) => !open)}
