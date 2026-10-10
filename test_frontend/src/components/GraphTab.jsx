@@ -141,14 +141,14 @@ function buildFlowLayout(rawNodes) {
   const positions = new Map();
   [...byLayer.entries()].sort((a, b) => a[0] - b[0]).forEach(([layer, layerNodes]) => {
     layerNodes.forEach((node, index) => {
-      positions.set(String(node.id), { x: 70 + layer * 300, y: 70 + index * 155 });
+      positions.set(String(node.id), { x: 54 + layer * 258, y: 54 + index * 170 });
     });
   });
 
   const flowNodes = nodes.map((node, index) => ({
     id: String(node.id),
     type: 'experimentNode',
-    position: positions.get(String(node.id)) || { x: 70, y: 70 + index * 155 },
+    position: positions.get(String(node.id)) || { x: 54, y: 54 + index * 170 },
     data: { node, order: index + 1 },
     sourcePosition: Position.Right,
     targetPosition: Position.Left,

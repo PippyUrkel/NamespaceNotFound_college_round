@@ -32,9 +32,9 @@ font-family: 'Poppins', sans-serif;
 
 .ingestion-overview { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:11px; }
 .ingestion-source-card { min-width:0; padding:16px; border:1px solid var(--in-border); border-radius:8px; background:var(--in-surface); position:relative; overflow:hidden; }
-.ingestion-source-card::after { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:var(--in-cyan); opacity:.7; }
-.ingestion-source-card--repo::after { background:var(--in-violet); }
-.ingestion-source-card--vector::after { background:var(--in-lime); }
+.ingestion-source-card::after {
+  display: none;
+}
 .ingestion-source-card__top { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:17px; }
 .ingestion-source-card__icon { display:grid; place-items:center; width:34px; height:34px; border:1px solid rgba(101,223,242,.25); border-radius:6px; color:var(--in-cyan); background:rgba(101,223,242,.045); }
 .ingestion-source-card--repo .ingestion-source-card__icon { color:var(--in-violet); border-color:rgba(182,160,255,.25); background:rgba(182,160,255,.045); }

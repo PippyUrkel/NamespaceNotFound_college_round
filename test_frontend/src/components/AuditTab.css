@@ -909,6 +909,7 @@ color: var(--audit-assumed);
     min-width: 680px;
 }
 
+
 .audit-finding-body {
     padding: 12px;
 }

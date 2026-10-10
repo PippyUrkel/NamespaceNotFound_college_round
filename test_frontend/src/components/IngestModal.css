@@ -330,10 +330,7 @@ letter-spacing: 0.08em;
 
 .cg-ingest-divider::before,
 .cg-ingest-divider::after {
-height: 1px;
-flex: 1;
-content: '';
-background: var(--border, #293638);
+display: none;
 }
 
 .cg-ingest-input-wrap {
