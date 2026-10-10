@@ -1,0 +1,24 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "CrisisGrid backend"
+readme = "README.md"
+requires-python = ">=3.12.6,<3.13"
+dependencies = [
+    "docling",
+    "fastapi[standard]",
+    "gitpython",
+    "groq",
+    "httpx",
+    "openai",
+    "pinecone",
+    "pydantic>=2",
+    "pydantic-settings",
+    "pytest",
+    "pytest-asyncio",
+    "python-dotenv",
+    "python-multipart",
+    "sentence-transformers",
+    "tenacity",
+    "uvicorn[standard]",
+]
