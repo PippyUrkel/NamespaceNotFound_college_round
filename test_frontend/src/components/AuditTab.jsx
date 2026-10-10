@@ -1,34 +1,62 @@
-import React, { useState, useEffect } from 'react';
+
+import React, { useEffect, useState } from 'react';
 import {
   ShieldAlert, ShieldCheck, FileText, Play, RefreshCw, Download,
   CheckCircle2, XCircle, HelpCircle, AlertTriangle, Scale,
+  ClipboardCheck, Activity, ExternalLink,
 } from 'lucide-react';
 import { api } from '../api';
+import './AuditTab.css';
 
 const VERDICT_STYLES = {
-  'Reproducible': { color: '#34d399', bg: 'rgba(16, 185, 129, 0.1)', border: 'rgba(16, 185, 129, 0.3)', Icon: CheckCircle2 },
-  'Not reproducible': { color: '#f87171', bg: 'rgba(239, 68, 68, 0.1)', border: 'rgba(239, 68, 68, 0.3)', Icon: XCircle },
-  'Not verifiable': { color: '#fbbf24', bg: 'rgba(245, 158, 11, 0.1)', border: 'rgba(245, 158, 11, 0.3)', Icon: HelpCircle },
-  'Pending verification': { color: '#93c5fd', bg: 'rgba(59, 130, 246, 0.08)', border: 'rgba(59, 130, 246, 0.25)', Icon: HelpCircle },
+  Reproducible: { tone: 'success', Icon: CheckCircle2 },
+  'Not reproducible': { tone: 'conflict', Icon: XCircle },
+  'Not verifiable': { tone: 'assumed', Icon: HelpCircle },
+  'Pending verification': { tone: 'research', Icon: HelpCircle },
 };
 
 const CLAIM_BADGES = {
-  reproducible: ['badge-green', 'Reproducible'],
-  not_reproducible: ['badge-red', 'Not reproducible'],
-  not_verifiable: ['badge-amber', 'Not verifiable'],
+  reproducible: ['success', 'Reproducible'],
+  not_reproducible: ['conflict', 'Not reproducible'],
+  not_verifiable: ['assumed', 'Not verifiable'],
 };
 
-const SEVERITY_BADGES = { critical: 'badge-red', high: 'badge-amber', medium: 'badge-purple', low: 'badge-gray' };
-const RISK_COLORS = { low: '#34d399', medium: '#fbbf24', high: '#f87171' };
+const SEVERITY_BADGES = {
+  critical: 'conflict',
+  high: 'assumed',
+  medium: 'code',
+  low: 'neutral',
+};
 
 function fmt(value, digits = 4) {
-  if (value === null || value === undefined) return '—';
+  if (value == null || Number.isNaN(Number(value))) return '—';
   return String(parseFloat(Number(value).toPrecision(digits)));
 }
 
-function evidenceLabel(ev) {
-  const where = [ev.section, ev.file_path, ev.page_number ? `page ${ev.page_number}` : null, ev.url].filter(Boolean).join(', ');
-  return `${ev.source}${where ? ` (${where})` : ''}`;
+function evidenceLabel(evidence) {
+  const location = [
+    evidence.section,
+    evidence.file_path,
+    evidence.page_number ? `page ${evidence.page_number}` : null,
+    evidence.url,
+  ].filter(Boolean).join(', ');
+
+  return `${evidence.source || 'Evidence'}${location ? ` (${location})` : ''}`;
+}
+
+function SectionHeading({ icon: Icon, eyebrow, children, trailing }) {
+  return (
+    <div className="audit-section-heading">
+      <div className="audit-section-heading-main">
+        <span className="audit-section-icon"><Icon size={17} /></span>
+        <div>
+          {eyebrow && <div className="audit-eyebrow">{eyebrow}</div>}
+          <h3>{children}</h3>
+        </div>
+      </div>
+      {trailing}
+    </div>
+  );
 }
 
 export default function AuditTab({ experimentId, latestExecution }) {
@@ -43,17 +71,19 @@ export default function AuditTab({ experimentId, latestExecution }) {
     setReport(null);
     setError('');
     loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [experimentId]);
 
   async function loadAll() {
     try {
       setAudit(await api.getAudit(experimentId));
-    } catch (e) {
+    } catch {
       setAudit(null);
     }
+
     try {
       setReport(await api.getReport(experimentId));
-    } catch (e) {
+    } catch {
       setReport(null);
     }
   }
@@ -61,11 +91,12 @@ export default function AuditTab({ experimentId, latestExecution }) {
   async function run(label, action) {
     setBusy(label);
     setError('');
+
     try {
       await action();
       await loadAll();
-    } catch (e) {
-      setError(e.message);
+    } catch (exception) {
+      setError(exception?.message || 'The requested audit action failed.');
     } finally {
       setBusy('');
     }
@@ -73,137 +104,312 @@ export default function AuditTab({ experimentId, latestExecution }) {
 
   const verification = audit?.claim_verification || report?.claim_verification;
   const verdict = report?.verdict;
-  const verdictStyle = VERDICT_STYLES[verdict?.status] || VERDICT_STYLES['Pending verification'];
+  const verdictStyle =
+    VERDICT_STYLES[verdict?.status] || VERDICT_STYLES['Pending verification'];
+  const VerdictIcon = verdictStyle.Icon;
   const findings = report?.findings || audit?.findings || [];
   const risk = report?.risk_score || audit?.risk_score;
   const auditedExecution = audit?.run?.execution_id;
-  const runAuditStale = latestExecution && auditedExecution !== latestExecution.execution_id;
+  const runAuditStale =
+    latestExecution && auditedExecution !== latestExecution.execution_id;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-      {/* Actions */}
-      <div className="card" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.75rem' }}>
-        <button className="btn btn-secondary btn-sm" disabled={!!busy}
-          onClick={() => run('static', () => api.runStaticAudit(experimentId, includeLlm))}>
-          <ShieldAlert size={14} /> {busy === 'static' ? 'Auditing...' : 'Run Static Audit'}
-        </button>
-        <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-          <input type="checkbox" checked={includeLlm} onChange={(e) => setIncludeLlm(e.target.checked)} />
-          include LLM checks (background)
-        </label>
-
-        <button className="btn btn-secondary btn-sm" disabled={!!busy || !latestExecution}
-          title={latestExecution ? '' : 'Run the experiment in the Execution Runner tab first'}
-          onClick={() => run('run', () => api.runRunAudit(experimentId, latestExecution?.execution_id))}>
-          <Play size={14} /> {busy === 'run' ? 'Comparing...' : 'Compare Latest Run vs Paper'}
-        </button>
-
-        <button className="btn btn-primary btn-sm" disabled={!!busy}
-          onClick={() => run('report', () => api.generateReport(experimentId))}>
-          <FileText size={14} /> {busy === 'report' ? 'Generating...' : 'Generate Report'}
-        </button>
-
-        <button className="btn btn-secondary btn-sm" disabled={!!busy} onClick={() => run('refresh', loadAll)}>
-          <RefreshCw size={13} />
-        </button>
-
-        {report && (
-          <a className="btn btn-secondary btn-sm" href={api.getReportMarkdownUrl(experimentId)} target="_blank" rel="noreferrer">
-            <Download size={14} /> report.md
-          </a>
-        )}
-
-        {runAuditStale && (
-          <span className="badge badge-amber">
-            <AlertTriangle size={12} /> Latest run {latestExecution.execution_id} not yet compared with the paper
-          </span>
-        )}
-      </div>
-
-      {error && (
-        <div className="card" style={{ borderColor: 'rgba(239, 68, 68, 0.4)', color: '#f87171', fontSize: '0.85rem' }}>
-          {error}
-        </div>
-      )}
-
-      {/* Verdict */}
-      {verdict ? (
-        <div style={{
-          background: verdictStyle.bg, border: `1px solid ${verdictStyle.border}`, borderRadius: '0.75rem',
-          padding: '1.25rem', display: 'flex', gap: '1rem', alignItems: 'flex-start',
-        }}>
-          <verdictStyle.Icon size={24} color={verdictStyle.color} style={{ marginTop: '0.1rem' }} />
-          <div style={{ flex: 1 }}>
-            <h3 style={{ fontSize: '1.05rem', fontWeight: 600, color: verdictStyle.color, marginBottom: '0.35rem' }}>
-              Verdict: {verdict.status}
-            </h3>
-            <ul style={{ fontSize: '0.85rem', color: 'var(--text-muted)', paddingLeft: '1.1rem', lineHeight: 1.6 }}>
-              {verdict.reasons.map((r, i) => <li key={i}>{r}</li>)}
-            </ul>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '0.5rem' }}>
-              Report generated {new Date(report.generated_at).toLocaleString()}
-            </div>
+    <div className="audit-workspace">
+      <section className="audit-intro">
+        <div>
+          <div className="audit-eyebrow audit-intro-kicker">
+            <span className="audit-live-dot" />
+            VALIDATION / REPORTING
           </div>
-        </div>
-      ) : (
-        <div className="card" style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
-          No report yet. Click <strong>Generate Report</strong>: it runs the static audit and compares the latest execution with the paper's claims.
-        </div>
-      )}
 
-      {/* Claim verification */}
-      <div className="card">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
-          <Scale size={18} color="var(--accent-cyan)" />
-          <h4 style={{ fontSize: '0.95rem', fontWeight: 600 }}>Paper Claims vs Reproduced Results</h4>
-          {verification && (
-            <span className="badge badge-blue">tolerance ±{Math.round((verification.tolerance || 0.1) * 100)}%</span>
+          <h2>Audit &amp; <span>report.</span></h2>
+
+          <p>
+            Evaluate paper claims against reproduced results and inspect
+            the evidence behind every finding.
+          </p>
+        </div>
+
+        <div className="audit-intro-mark" aria-hidden="true">
+          <ShieldCheck size={28} />
+          <span>CG / AUDIT</span>
+        </div>
+      </section>
+
+      <section className="audit-toolbar audit-panel">
+        <div className="audit-toolbar-copy">
+          <span className="audit-eyebrow">AUDIT CONTROLS</span>
+          <span className="audit-toolbar-caption">
+            Run checks, compare results, and generate a reproducibility report.
+          </span>
+        </div>
+
+        <div className="audit-toolbar-actions">
+          <button
+            className="audit-btn audit-btn-secondary"
+            disabled={Boolean(busy)}
+            onClick={() =>
+              run('static', () => api.runStaticAudit(experimentId, includeLlm))
+            }
+          >
+            <ShieldAlert size={15} />
+            {busy === 'static' ? 'Auditing…' : 'Run static audit'}
+          </button>
+
+          <label className="audit-checkbox-label">
+            <input
+              type="checkbox"
+              checked={includeLlm}
+              onChange={(event) => setIncludeLlm(event.target.checked)}
+            />
+            <span>Include LLM checks</span>
+          </label>
+
+          <button
+            className="audit-btn audit-btn-secondary"
+            disabled={Boolean(busy) || !latestExecution}
+            title={
+              latestExecution
+                ? ''
+                : 'Run the experiment in the Execution Runner tab first'
+            }
+            onClick={() =>
+              run('run', () =>
+                api.runRunAudit(experimentId, latestExecution?.execution_id)
+              )
+            }
+          >
+            <Play size={14} />
+            {busy === 'run' ? 'Comparing…' : 'Compare latest run'}
+          </button>
+
+          <button
+            className="audit-btn audit-btn-primary"
+            disabled={Boolean(busy)}
+            onClick={() => run('report', () => api.generateReport(experimentId))}
+          >
+            <FileText size={15} />
+            {busy === 'report' ? 'Generating…' : 'Generate report'}
+          </button>
+
+          <button
+            className="audit-icon-btn"
+            disabled={Boolean(busy)}
+            onClick={() => run('refresh', loadAll)}
+            aria-label="Refresh audit data"
+            title="Refresh audit data"
+          >
+            <RefreshCw
+              size={15}
+              className={busy === 'refresh' ? 'audit-spin' : ''}
+            />
+          </button>
+
+          {report && (
+            <a
+              className="audit-btn audit-btn-secondary"
+              href={api.getReportMarkdownUrl(experimentId)}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <Download size={14} />
+              report.md
+              <ExternalLink size={12} />
+            </a>
           )}
         </div>
 
+        {runAuditStale && (
+          <div className="audit-notice audit-notice-assumed">
+            <AlertTriangle size={14} />
+            Latest run <code>{latestExecution.execution_id}</code> has not yet
+            been compared with the paper.
+          </div>
+        )}
+      </section>
+
+      {error && (
+        <div className="audit-notice audit-notice-conflict" role="alert">
+          <AlertTriangle size={15} />
+          <span>{error}</span>
+        </div>
+      )}
+
+      <section className="audit-verdict-layout">
+        <div className={`audit-verdict-card audit-tone-${verdictStyle.tone}`}>
+          <div className="audit-verdict-topline">
+            <span className="audit-eyebrow">OVERALL VERDICT</span>
+            <span className="audit-status-chip">
+              <VerdictIcon size={13} />
+              {verdict?.status || 'Pending verification'}
+            </span>
+          </div>
+
+          <div className="audit-verdict-content">
+            <span className="audit-verdict-icon">
+              <VerdictIcon size={25} />
+            </span>
+
+            <div>
+              <h3>{verdict ? verdict.status : 'Report not generated'}</h3>
+              <p>
+                {verdict
+                  ? 'Review the reasons and supporting evidence before treating this result as verified.'
+                  : 'Generate a report to evaluate reproducibility and compare the latest execution with the paper claims.'}
+              </p>
+            </div>
+          </div>
+
+          {verdict?.reasons?.length > 0 && (
+            <ul className="audit-verdict-reasons">
+              {verdict.reasons.map((reason, index) => (
+                <li key={`${index}-${reason}`}>{reason}</li>
+              ))}
+            </ul>
+          )}
+
+          {report?.generated_at && (
+            <div className="audit-generated-at">
+              REPORT GENERATED / {new Date(report.generated_at).toLocaleString()}
+            </div>
+          )}
+        </div>
+
+        <div className="audit-risk-card audit-panel">
+          <div className="audit-risk-header">
+            <span className="audit-section-icon"><Activity size={17} /></span>
+            <div>
+              <div className="audit-eyebrow">REPRODUCIBILITY RISK</div>
+              <h3>{risk ? `${risk.score}/100` : '—'}</h3>
+            </div>
+          </div>
+
+          {risk ? (
+            <>
+              <div
+                className="audit-risk-meter"
+                role="img"
+                aria-label={`Risk score ${risk.score} out of 100`}
+              >
+                <span
+                  style={{
+                    width: `${Math.max(0, Math.min(100, Number(risk.score) || 0))}%`,
+                  }}
+                />
+              </div>
+
+              <div className="audit-risk-footer">
+                <span>Risk score</span>
+                <strong className={`audit-risk-${risk.bucket || 'medium'}`}>
+                  {risk.bucket || 'Unclassified'}
+                </strong>
+              </div>
+            </>
+          ) : (
+            <p className="audit-muted-copy">
+              Run an audit to calculate the current risk score.
+            </p>
+          )}
+        </div>
+      </section>
+
+      <section className="audit-panel audit-section-panel">
+        <SectionHeading
+          icon={Scale}
+          eyebrow="CLAIM VERIFICATION"
+          trailing={
+            verification && (
+              <span className="audit-meta-chip">
+                Tolerance ±{Math.round((verification.tolerance || 0.1) * 100)}%
+              </span>
+            )
+          }
+        >
+          Paper claims vs reproduced results
+        </SectionHeading>
+
         {!verification ? (
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-            Not compared yet. Run the experiment, then click <strong>Compare Latest Run vs Paper</strong>.
-          </p>
-        ) : verification.claims.length === 0 ? (
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{verification.reasons.join(' ')}</p>
+          <div className="audit-empty-inline">
+            <div className="audit-empty-icon"><Scale size={19} /></div>
+            <div>
+              <strong>No comparison available</strong>
+              <p>Run the experiment, then compare the latest run with the paper.</p>
+            </div>
+          </div>
+        ) : verification.claims?.length === 0 ? (
+          <div className="audit-empty-inline">
+            <div className="audit-empty-icon"><HelpCircle size={19} /></div>
+            <div>
+              <strong>No verifiable claims found</strong>
+              <p>
+                {verification.reasons?.join(' ') ||
+                  'The current report does not contain metric claims to compare.'}
+              </p>
+            </div>
+          </div>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.825rem' }}>
+          <div className="audit-table-wrap">
+            <table className="audit-table">
               <thead>
-                <tr style={{ textAlign: 'left', color: 'var(--text-dim)', borderBottom: '1px solid var(--border)' }}>
-                  <th style={{ padding: '0.5rem' }}>Metric</th>
-                  <th style={{ padding: '0.5rem' }}>Claimed (paper)</th>
-                  <th style={{ padding: '0.5rem' }}>Reproduced (mean ± std)</th>
-                  <th style={{ padding: '0.5rem' }}>Gap</th>
-                  <th style={{ padding: '0.5rem' }}>Verdict</th>
+                <tr>
+                  <th>Metric</th>
+                  <th>Claimed <span>/ PAPER</span></th>
+                  <th>Reproduced <span>/ MEAN ± STD</span></th>
+                  <th>Gap</th>
+                  <th>Verdict</th>
                 </tr>
               </thead>
+
               <tbody>
-                {verification.claims.map((c, i) => {
-                  const [badge, label] = CLAIM_BADGES[c.verdict] || CLAIM_BADGES.not_verifiable;
+                {verification.claims.map((claim, index) => {
+                  const [tone, label] =
+                    CLAIM_BADGES[claim.verdict] || CLAIM_BADGES.not_verifiable;
+
                   return (
-                    <tr key={i} style={{ borderBottom: '1px solid var(--border)', verticalAlign: 'top' }}>
-                      <td style={{ padding: '0.5rem', fontWeight: 600 }}>
-                        {c.metric}
-                        {c.claim_quote && (
-                          <div style={{ fontWeight: 400, fontSize: '0.75rem', color: 'var(--text-dim)', fontStyle: 'italic', maxWidth: '360px' }}>
-                            “{c.claim_quote}”
-                          </div>
+                    <tr key={`${claim.metric || 'metric'}-${index}`}>
+                      <td className="audit-metric-cell">
+                        <strong>{claim.metric}</strong>
+                        {claim.claim_quote && (
+                          <p className="audit-claim-quote">
+                            “{claim.claim_quote}”
+                          </p>
                         )}
                       </td>
-                      <td style={{ padding: '0.5rem', fontFamily: 'var(--font-mono)' }}>{fmt(c.claimed_value)}</td>
-                      <td style={{ padding: '0.5rem', fontFamily: 'var(--font-mono)' }}>
-                        {fmt(c.reproduced_mean)}{c.reproduced_std != null ? ` ± ${fmt(c.reproduced_std, 2)}` : ''}
-                        <div style={{ fontSize: '0.72rem', color: 'var(--text-dim)' }}>{c.seeds_run} seed(s)</div>
+
+                      <td>
+                        <span className="audit-number">
+                          {fmt(claim.claimed_value)}
+                        </span>
                       </td>
-                      <td style={{ padding: '0.5rem', fontFamily: 'var(--font-mono)' }}>
-                        {c.gap != null ? `${(c.gap * 100).toFixed(1)}%` : '—'}
+
+                      <td>
+                        <span className="audit-number">
+                          {fmt(claim.reproduced_mean)}
+                          {claim.reproduced_std != null
+                            ? ` ± ${fmt(claim.reproduced_std, 2)}`
+                            : ''}
+                        </span>
+                        <span className="audit-cell-subtext">
+                          {claim.seeds_run ?? 0} seed(s)
+                        </span>
                       </td>
-                      <td style={{ padding: '0.5rem' }}>
-                        <span className={`badge ${badge}`}>{label}</span>
-                        {c.used_assumed_values && (
-                          <div style={{ fontSize: '0.72rem', color: '#fbbf24', marginTop: '0.25rem' }}>run used assumed values</div>
+
+                      <td>
+                        <span className="audit-number">
+                          {claim.gap != null
+                            ? `${(claim.gap * 100).toFixed(1)}%`
+                            : '—'}
+                        </span>
+                      </td>
+
+                      <td>
+                        <span className={`audit-chip audit-chip-${tone}`}>
+                          {label}
+                        </span>
+                        {claim.used_assumed_values && (
+                          <span className="audit-assumption-note">
+                            Run used assumed values
+                          </span>
                         )}
                       </td>
                     </tr>
@@ -213,61 +419,117 @@ export default function AuditTab({ experimentId, latestExecution }) {
             </table>
           </div>
         )}
-      </div>
+      </section>
 
-      {/* Risk score + findings */}
-      <div className="card">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
-          <ShieldCheck size={18} color="var(--accent-purple)" />
-          <h4 style={{ fontSize: '0.95rem', fontWeight: 600 }}>Reproducibility Audit Findings</h4>
-          {risk && (
-            <span style={{ fontSize: '0.85rem', fontWeight: 700, color: RISK_COLORS[risk.bucket] }}>
-              Risk {risk.score}/100 ({risk.bucket})
+      <section className="audit-panel audit-section-panel">
+        <SectionHeading
+          icon={ShieldCheck}
+          eyebrow="FINDINGS & REMEDIATION"
+          trailing={
+            <span className="audit-count-chip">
+              {findings.length} finding{findings.length === 1 ? '' : 's'}
             </span>
-          )}
-        </div>
+          }
+        >
+          Reproducibility audit findings
+        </SectionHeading>
 
         {!audit && !report ? (
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>No audit has been run.</p>
+          <div className="audit-empty-inline">
+            <div className="audit-empty-icon"><ClipboardCheck size={19} /></div>
+            <div>
+              <strong>No audit has been run</strong>
+              <p>
+                Run a static audit to surface missing configuration, evidence
+                gaps, and reproducibility risks.
+              </p>
+            </div>
+          </div>
         ) : findings.length === 0 ? (
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>No findings.</p>
+          <div className="audit-empty-inline">
+            <div className="audit-empty-icon audit-empty-success">
+              <CheckCircle2 size={19} />
+            </div>
+            <div>
+              <strong>No findings reported</strong>
+              <p>No findings were returned by the current audit or report.</p>
+            </div>
+          </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-            {findings.map((f, i) => (
-              <div key={i} style={{ background: 'rgba(255, 255, 255, 0.03)', borderRadius: '0.5rem', padding: '0.75rem 0.9rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.3rem' }}>
-                  <span className={`badge ${SEVERITY_BADGES[f.severity] || 'badge-gray'}`}>{f.severity}</span>
-                  <span className="badge badge-gray">{f.status}</span>
-                  <span className="badge badge-gray">{f.phase}</span>
-                  <strong style={{ fontSize: '0.875rem' }}>{f.title}</strong>
+          <div className="audit-findings-list">
+            {findings.map((finding, index) => (
+              <article
+                className="audit-finding"
+                key={`${finding.title || 'finding'}-${index}`}
+              >
+                <div className="audit-finding-accent" />
+
+                <div className="audit-finding-body">
+                  <div className="audit-finding-topline">
+                    <span
+                      className={`audit-chip audit-chip-${
+                        SEVERITY_BADGES[finding.severity] || 'neutral'
+                      }`}
+                    >
+                      {finding.severity || 'unknown'}
+                    </span>
+                    <span className="audit-chip audit-chip-neutral">
+                      {finding.status || 'unresolved'}
+                    </span>
+                    <span className="audit-chip audit-chip-neutral">
+                      {finding.phase || 'general'}
+                    </span>
+                    <h4>{finding.title}</h4>
+                  </div>
+
+                  <p className="audit-finding-message">{finding.message}</p>
+
+                  {finding.evidence?.length > 0 && (
+                    <div className="audit-evidence-block">
+                      <div className="audit-eyebrow">SUPPORTING EVIDENCE</div>
+                      <ul>
+                        {finding.evidence.map((evidence, evidenceIndex) => (
+                          <li
+                            key={`${evidence.source || 'evidence'}-${evidenceIndex}`}
+                          >
+                            <span className="audit-evidence-source">
+                              {evidenceLabel(evidence)}
+                            </span>
+                            {evidence.exact_text && (
+                              <blockquote>
+                                “{evidence.exact_text.slice(0, 200)}”
+                              </blockquote>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {finding.remediation && (
+                    <div className="audit-remediation">
+                      <strong>Recommended remediation</strong>
+                      <p>{finding.remediation}</p>
+                    </div>
+                  )}
                 </div>
-                <p style={{ fontSize: '0.825rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>{f.message}</p>
-                {f.evidence?.length > 0 && (
-                  <ul style={{ fontSize: '0.75rem', color: 'var(--text-dim)', paddingLeft: '1.1rem', marginTop: '0.35rem' }}>
-                    {f.evidence.map((ev, j) => (
-                      <li key={j}>
-                        <em>{evidenceLabel(ev)}</em>{ev.exact_text ? `: “${ev.exact_text.slice(0, 200)}”` : ''}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {f.remediation && (
-                  <div style={{ fontSize: '0.775rem', color: '#93c5fd', marginTop: '0.35rem' }}>Remediation: {f.remediation}</div>
-                )}
-              </div>
+              </article>
             ))}
           </div>
         )}
-      </div>
+      </section>
 
-      {/* Limitations */}
       {report?.limitations?.length > 0 && (
-        <div className="card">
-          <h4 style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.5rem' }}>Limitations of this report</h4>
-          <ul style={{ fontSize: '0.825rem', color: 'var(--text-muted)', paddingLeft: '1.1rem', lineHeight: 1.6 }}>
-            {report.limitations.map((l, i) => <li key={i}>{l}</li>)}
+        <section className="audit-panel audit-section-panel">
+          <SectionHeading icon={AlertTriangle} eyebrow="SCOPE & CAVEATS">
+            Limitations of this report
+          </SectionHeading>
+          <ul className="audit-limitations-list">
+            {report.limitations.map((limitation, index) => (
+              <li key={`${index}-${limitation}`}>{limitation}</li>
+            ))}
           </ul>
-        </div>
+        </section>
       )}
     </div>
   );

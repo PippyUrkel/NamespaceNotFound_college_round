@@ -1,158 +1,360 @@
+
 import React, { useState, useEffect } from 'react';
-import { ShieldCheck, FileCheck, Copy, Check, Info, Box, Layers } from 'lucide-react';
+import {
+  ShieldCheck, FileCheck, Copy, Check, Info, Box, Layers,
+  Fingerprint, Activity, AlertTriangle,
+} from 'lucide-react';
 import { api } from '../api';
+import './EvidenceTab.css';
+
+function ManifestCard({ icon: Icon, label, value, detail, tone = 'neutral', mono = false }) {
+  return (
+    <article className="evidence-metric-card">
+      <div className="evidence-metric-top">
+        <span className={`evidence-metric-icon evidence-tone-${tone}`}>
+          <Icon size={16} />
+        </span>
+        <span className="evidence-eyebrow">{label}</span>
+      </div>
+      <div className={`evidence-metric-value ${mono ? 'evidence-mono' : ''}`}>
+        {value}
+      </div>
+      {detail && <div className="evidence-metric-detail">{detail}</div>}
+    </article>
+  );
+}
 
 export default function EvidenceTab({ experimentId, latestExecution }) {
   const [evidence, setEvidence] = useState(null);
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [copyError, setCopyError] = useState('');
 
   useEffect(() => {
-    if (latestExecution?.execution_id) {
-      loadEvidence();
-    }
-  }, [latestExecution?.execution_id]);
+    let cancelled = false;
 
-  async function loadEvidence() {
-    setLoading(true);
+    async function loadEvidence() {
+      if (!latestExecution?.execution_id) {
+        setEvidence(null);
+        return;
+      }
+
+      setLoading(true);
+      setCopyError('');
+
+      try {
+        const data = await api.getRunEvidence(
+          experimentId,
+          latestExecution.execution_id
+        );
+        if (!cancelled) setEvidence(data);
+      } catch (error) {
+        console.warn('Failed to load evidence:', error);
+        if (!cancelled) setEvidence(null);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    loadEvidence();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [experimentId, latestExecution?.execution_id]);
+
+  async function copyManifest() {
+    if (!latestExecution) return;
+
     try {
-      const data = await api.getRunEvidence(experimentId, latestExecution.execution_id);
-      setEvidence(data);
-    } catch (e) {
-      console.warn('Failed to load evidence:', e);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function copyManifest() {
-    if (latestExecution) {
-      navigator.clipboard.writeText(JSON.stringify(latestExecution, null, 2));
+      await navigator.clipboard.writeText(
+        JSON.stringify(latestExecution, null, 2)
+      );
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setCopyError('');
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopyError(
+        'Clipboard access failed. Copy the JSON directly from the manifest below.'
+      );
     }
   }
 
   if (!latestExecution) {
     return (
-      <div className="card" style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-        No execution manifest recorded yet. Launch an execution run to inspect provenance evidence.
+      <div className="evidence-workspace">
+        <section className="evidence-intro">
+          <div>
+            <div className="evidence-eyebrow">
+              PROVENANCE / EXECUTION RECORD
+            </div>
+            <h2>Evidence <span>vault.</span></h2>
+            <p>
+              Inspect immutable execution metadata and the evidence
+              supporting a run.
+            </p>
+          </div>
+
+          <div className="evidence-intro-mark">
+            <Fingerprint size={28} />
+            <span>CG / EVIDENCE</span>
+          </div>
+        </section>
+
+        <section className="evidence-empty-state">
+          <span className="evidence-empty-icon">
+            <FileCheck size={25} />
+          </span>
+
+          <div className="evidence-eyebrow">NO EXECUTION MANIFEST</div>
+
+          <h3>Your provenance record will appear here.</h3>
+
+          <p>
+            No execution manifest has been recorded yet. Launch an execution
+            run in the Execution Runner tab to inspect its provenance evidence.
+          </p>
+        </section>
       </div>
     );
   }
 
+  const seedsCompleted = evidence?.seeds_completed ?? 0;
+  const seedsTotal = evidence?.seeds_total ?? 0;
+  const allSeedsCompleted = Boolean(evidence?.all_seeds_completed);
+
+  const seedProgress =
+    seedsTotal > 0
+      ? Math.min(100, (seedsCompleted / seedsTotal) * 100)
+      : 0;
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-      {/* Scientific Verdict Notice */}
-      <div style={{
-        background: 'rgba(59, 130, 246, 0.08)',
-        border: '1px solid rgba(59, 130, 246, 0.25)',
-        borderRadius: '0.75rem',
-        padding: '1.25rem',
-        display: 'flex',
-        alignItems: 'flex-start',
-        gap: '1rem',
-      }}>
-        <Info size={22} color="var(--accent-blue)" style={{ marginTop: '0.1rem' }} />
+    <div className="evidence-workspace">
+      <section className="evidence-intro">
         <div>
-          <h4 style={{ fontSize: '0.95rem', fontWeight: 600, color: '#93c5fd', marginBottom: '0.25rem' }}>
-            Strict Separation of Execution Status and Scientific Validity
-          </h4>
-          <p style={{ fontSize: '0.825rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-            In CrisisGrid, execution status is strictly decoupled from scientific verdicts. Hardware bounds, container resource exhaustion, or incomplete runs do <strong>not</strong> automatically imply that a research paper’s scientific claims are false. Scientific claims are evaluated only on rigorous evidence.
+          <div className="evidence-eyebrow evidence-intro-kicker">
+            <span className="evidence-live-dot" />
+            PROVENANCE / EXECUTION RECORD
+          </div>
+
+          <h2>Evidence <span>vault.</span></h2>
+
+          <p>
+            Inspect the execution fingerprint, environment, and recorded
+            limitations behind this experiment.
           </p>
         </div>
-      </div>
 
-      {/* Manifest Overview Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
-        <div className="card">
-          <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-dim)', textTransform: 'uppercase', marginBottom: '0.3rem' }}>
-            Execution ID
+        <div className="evidence-intro-mark">
+          <Fingerprint size={28} />
+          <span>CG / EVIDENCE</span>
+        </div>
+      </section>
+
+      <section className="evidence-principle">
+        <span className="evidence-principle-icon">
+          <Info size={19} />
+        </span>
+
+        <div>
+          <div className="evidence-principle-heading">
+            Execution status ≠ scientific validity
           </div>
-          <div style={{ fontSize: '1rem', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
-            {latestExecution.execution_id}
-          </div>
-          <span style={{ fontSize: '0.725rem', color: 'var(--text-muted)' }}>
-            Created {new Date(latestExecution.created_at).toLocaleString()}
-          </span>
+
+          <p>
+            Hardware bounds, container resource exhaustion, or incomplete runs
+            do <strong>not</strong> automatically imply that a research paper’s
+            scientific claims are false. Scientific claims must be evaluated
+            independently using rigorous evidence.
+          </p>
         </div>
 
-        <div className="card">
-          <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-dim)', textTransform: 'uppercase', marginBottom: '0.3rem' }}>
-            Graph Version & Hash
-          </div>
-          <div style={{ fontSize: '1rem', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--accent-indigo)' }}>
-            {latestExecution.graph_version_id} ({latestExecution.graph_hash?.slice(0, 8)})
-          </div>
-          <span style={{ fontSize: '0.725rem', color: 'var(--text-muted)' }}>Immutable graph snapshot</span>
-        </div>
+        <span className="evidence-principle-tag">
+          VALIDITY RULE / 001
+        </span>
+      </section>
 
-        <div className="card">
-          <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-dim)', textTransform: 'uppercase', marginBottom: '0.3rem' }}>
-            Docker Image Digest
-          </div>
-          <div style={{ fontSize: '0.85rem', fontWeight: 600, fontFamily: 'var(--font-mono)', color: 'var(--accent-cyan)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {latestExecution.docker_image_digest || latestExecution.config?.docker_image || 'python:3.11-slim'}
-          </div>
-          <span style={{ fontSize: '0.725rem', color: 'var(--text-muted)' }}>Isolated sandbox environment</span>
-        </div>
+      <section className="evidence-metrics-grid">
+        <ManifestCard
+          icon={Fingerprint}
+          label="Execution ID"
+          value={latestExecution.execution_id}
+          detail={
+            latestExecution.created_at
+              ? `Created ${new Date(
+                  latestExecution.created_at
+                ).toLocaleString()}`
+              : 'Creation timestamp unavailable'
+          }
+          mono
+          tone="research"
+        />
 
-        <div className="card">
-          <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-dim)', textTransform: 'uppercase', marginBottom: '0.3rem' }}>
-            Seed Execution Integrity
-          </div>
-          <div style={{ fontSize: '1rem', fontWeight: 700 }}>
-            {evidence?.seeds_completed ?? 0} / {evidence?.seeds_total ?? 0}{' '}
-            <span style={{ fontSize: '0.8rem', color: evidence?.all_seeds_completed ? '#34d399' : '#fbbf24' }}>
-              ({evidence?.all_seeds_completed ? 'All Completed' : 'Incomplete Runs'})
+        <ManifestCard
+          icon={Layers}
+          label="Graph version & hash"
+          value={
+            <>
+              {latestExecution.graph_version_id || '—'}
+              <span className="evidence-value-secondary">
+                {latestExecution.graph_hash
+                  ? ` / ${latestExecution.graph_hash.slice(0, 8)}`
+                  : ''}
+              </span>
+            </>
+          }
+          detail="Immutable graph snapshot"
+          mono
+          tone="code"
+        />
+
+        <ManifestCard
+          icon={Box}
+          label="Docker image digest"
+          value={
+            latestExecution.docker_image_digest ||
+            latestExecution.config?.docker_image ||
+            'python:3.11-slim'
+          }
+          detail="Isolated sandbox environment"
+          mono
+          tone="research"
+        />
+
+        <article className="evidence-metric-card">
+          <div className="evidence-metric-top">
+            <span
+              className={`evidence-metric-icon ${
+                allSeedsCompleted
+                  ? 'evidence-tone-success'
+                  : 'evidence-tone-assumed'
+              }`}
+            >
+              <Activity size={16} />
+            </span>
+
+            <span className="evidence-eyebrow">
+              SEED EXECUTION INTEGRITY
             </span>
           </div>
-          <span style={{ fontSize: '0.725rem', color: 'var(--text-muted)' }}>Multi-seed independent trials</span>
-        </div>
-      </div>
 
-      {/* Audit Evidence Limitations List */}
-      {evidence?.execution_limitations && evidence.execution_limitations.length > 0 && (
-        <div className="card">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
-            <ShieldCheck size={18} color="var(--accent-amber)" />
-            <h4 style={{ fontSize: '0.95rem', fontWeight: 600 }}>Execution Limitations Recorded for Auditor</h4>
+          <div className="evidence-seed-value">
+            <strong>{seedsCompleted}</strong>
+            <span>/ {seedsTotal}</span>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-            {evidence.execution_limitations.map((lim, idx) => (
-              <div key={idx} style={{
-                background: 'rgba(255, 255, 255, 0.03)',
-                padding: '0.65rem 0.85rem',
-                borderRadius: '0.375rem',
-                fontSize: '0.825rem',
-              }}>
-                <strong style={{ color: '#fbbf24', textTransform: 'capitalize' }}>{lim.type.replace(/_/g, ' ')}: </strong>
-                <span>{lim.detail}</span>
+          <div className="evidence-seed-track">
+            <span
+              className={allSeedsCompleted ? 'evidence-seed-complete' : ''}
+              style={{ width: `${seedProgress}%` }}
+            />
+          </div>
+
+          <div
+            className={`evidence-metric-detail ${
+              allSeedsCompleted
+                ? 'evidence-text-success'
+                : 'evidence-text-assumed'
+            }`}
+          >
+            {allSeedsCompleted
+              ? 'All seeds completed'
+              : 'Incomplete runs'}
+
+            {loading ? ' · Refreshing evidence…' : ''}
+          </div>
+        </article>
+      </section>
+
+      {evidence?.execution_limitations?.length > 0 && (
+        <section className="evidence-panel">
+          <div className="evidence-section-heading">
+            <div className="evidence-section-heading-main">
+              <span className="evidence-section-icon evidence-tone-assumed">
+                <ShieldCheck size={17} />
+              </span>
+
+              <div>
+                <div className="evidence-eyebrow">AUDITOR NOTES</div>
+                <h3>Execution limitations</h3>
               </div>
+            </div>
+
+            <span className="evidence-count-chip">
+              {evidence.execution_limitations.length} recorded
+            </span>
+          </div>
+
+          <p className="evidence-section-description">
+            Constraints recorded for review. These limitations describe the
+            execution context and are not, by themselves, scientific verdicts.
+          </p>
+
+          <div className="evidence-limitations-list">
+            {evidence.execution_limitations.map((limitation, index) => (
+              <article
+                className="evidence-limitation"
+                key={`${limitation.type}-${index}`}
+              >
+                <span className="evidence-limitation-icon">
+                  <AlertTriangle size={15} />
+                </span>
+
+                <div>
+                  <strong>
+                    {(limitation.type || 'limitation').replace(/_/g, ' ')}
+                  </strong>
+                  <p>{limitation.detail}</p>
+                </div>
+              </article>
             ))}
           </div>
-        </div>
+        </section>
       )}
 
-      {/* Raw JSON Manifest Inspector */}
-      <div className="card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <FileCheck size={18} color="var(--accent-purple)" />
-            <h4 style={{ fontSize: '0.95rem', fontWeight: 600 }}>Execution Manifest (JSON Provenance Record)</h4>
+      <section className="evidence-panel evidence-manifest-panel">
+        <div className="evidence-section-heading">
+          <div className="evidence-section-heading-main">
+            <span className="evidence-section-icon evidence-tone-code">
+              <FileCheck size={17} />
+            </span>
+
+            <div>
+              <div className="evidence-eyebrow">RAW PROVENANCE</div>
+              <h3>Execution manifest</h3>
+            </div>
           </div>
-          <button className="btn btn-secondary btn-sm" onClick={copyManifest}>
-            {copied ? <Check size={14} color="#34d399" /> : <Copy size={14} />}
-            <span>{copied ? 'Copied' : 'Copy Manifest JSON'}</span>
+
+          <button
+            className={`evidence-copy-btn ${copied ? 'is-copied' : ''}`}
+            onClick={copyManifest}
+          >
+            {copied ? <Check size={14} /> : <Copy size={14} />}
+            {copied ? 'Copied' : 'Copy manifest JSON'}
           </button>
         </div>
 
-        <pre className="code-block" style={{ maxHeight: '350px' }}>
-          {JSON.stringify(latestExecution, null, 2)}
+        <div className="evidence-manifest-meta">
+          <span>
+            <span className="evidence-meta-dot" />
+            JSON
+          </span>
+          <span>READ-ONLY SNAPSHOT</span>
+          <span>
+            {Object.keys(latestExecution).length} top-level fields
+          </span>
+        </div>
+
+        {copyError && (
+          <p className="evidence-copy-error" role="alert">
+            {copyError}
+          </p>
+        )}
+
+        <pre className="evidence-code-block">
+          <code>{JSON.stringify(latestExecution, null, 2)}</code>
         </pre>
-      </div>
+      </section>
     </div>
   );
 }

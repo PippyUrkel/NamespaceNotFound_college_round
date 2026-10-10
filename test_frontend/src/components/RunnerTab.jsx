@@ -1,15 +1,62 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  Play, RotateCcw, StopCircle, CheckCircle2, XCircle, Clock, 
-  Terminal, ShieldCheck, AlertCircle, ChevronDown, ChevronRight, Loader2, Sparkles
+
+import React, { useEffect, useState } from 'react';
+import {
+  Play,
+  RotateCcw,
+  StopCircle,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  Terminal,
+  ShieldCheck,
+  AlertCircle,
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  Sparkles,
+  Cpu,
+  MemoryStick,
+  Timer,
+  GitBranch,
+  Activity,
+  X,
 } from 'lucide-react';
 import { api } from '../api';
+import './RunnerTab.css';
 
-export default function RunnerTab({ 
-  experimentId, 
-  activeVersionId, 
-  latestExecution, 
-  onRefreshExecution 
+function StatusPill({ status }) {
+  const normalized = String(status || 'unknown').toLowerCase();
+
+  const icon =
+    normalized === 'completed' ? <CheckCircle2 size={12} /> :
+    normalized === 'running' || normalized === 'preparing' ? <Activity size={12} /> :
+    normalized === 'timed_out' ? <Clock size={12} /> :
+    normalized === 'cancelled' ? <XCircle size={12} /> :
+    normalized === 'resource_exhausted' ? <MemoryStick size={12} /> :
+    normalized === 'failed' || normalized === 'partially_completed' ? <AlertCircle size={12} /> :
+    <ShieldCheck size={12} />;
+
+  return (
+    <span className={`cg-runner-status is-${normalized.replace(/[^a-z0-9_-]/g, '-')}`}>
+      {icon}
+      {normalized.replaceAll('_', ' ')}
+    </span>
+  );
+}
+
+function MetricValue({ value, digits = 4 }) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return '—';
+  }
+
+  return typeof value === 'number' ? value.toFixed(digits) : String(value);
+}
+
+export default function RunnerTab({
+  experimentId,
+  activeVersionId,
+  latestExecution,
+  onRefreshExecution,
 }) {
   const [seedsInput, setSeedsInput] = useState('42, 123, 7');
   const [timeoutSec, setTimeoutSec] = useState('600');
@@ -21,73 +68,156 @@ export default function RunnerTab({
   const [expandedSeed, setExpandedSeed] = useState(null);
   const [selectedNodeLogs, setSelectedNodeLogs] = useState(null);
   const [progressEvents, setProgressEvents] = useState([]);
+  const [actionError, setActionError] = useState('');
 
   const exec = latestExecution;
 
-  // Poll progress if execution is running
+  const isActive = Boolean(
+    exec &&
+    (exec.status === 'running' || exec.status === 'preparing')
+  );
+
+  const parsedSeeds = seedsInput
+    .split(',')
+    .map((seed) => Number.parseInt(seed.trim(), 10))
+    .filter((seed) => !Number.isNaN(seed));
+
   useEffect(() => {
     let interval = null;
-    if (exec && (exec.status === 'running' || exec.status === 'preparing' || running)) {
-      interval = setInterval(async () => {
+    let cancelled = false;
+
+    if (
+      exec &&
+      (
+        exec.status === 'running' ||
+        exec.status === 'preparing' ||
+        running
+      )
+    ) {
+      interval = window.setInterval(async () => {
         try {
-          const events = await api.getProgress(experimentId, exec.execution_id);
-          setProgressEvents(events || []);
-          const updated = await api.getExecution(experimentId, exec.execution_id);
-          if (updated.status !== 'running' && updated.status !== 'preparing') {
-            setRunning(false);
-            clearInterval(interval);
+          const events = await api.getProgress(
+            experimentId,
+            exec.execution_id
+          );
+
+          if (!cancelled) {
+            setProgressEvents(events || []);
           }
-          onRefreshExecution();
-        } catch (e) {
-          console.warn('Progress poll error:', e);
+
+          const updated = await api.getExecution(
+            experimentId,
+            exec.execution_id
+          );
+
+          if (
+            !cancelled &&
+            updated.status !== 'running' &&
+            updated.status !== 'preparing'
+          ) {
+            setRunning(false);
+            window.clearInterval(interval);
+          }
+
+          if (!cancelled) {
+            onRefreshExecution();
+          }
+        } catch (error) {
+          console.warn('Progress poll error:', error);
         }
       }, 2000);
     }
+
     return () => {
-      if (interval) clearInterval(interval);
+      cancelled = true;
+
+      if (interval) {
+        window.clearInterval(interval);
+      }
     };
-  }, [exec?.execution_id, exec?.status, running]);
+  }, [
+    experimentId,
+    exec?.execution_id,
+    exec?.status,
+    running,
+    onRefreshExecution,
+  ]);
 
   async function handleLaunch() {
+    setActionError('');
+
+    if (parsedSeeds.length === 0) {
+      setActionError(
+        'Enter at least one valid seed, separated by commas.'
+      );
+      return;
+    }
+
+    const timeout = Number.parseInt(timeoutSec, 10);
+    const memory = Number.parseInt(memMb, 10);
+    const cpu = Number.parseFloat(cpuLimit);
+
+    if (!Number.isFinite(timeout) || timeout <= 0) {
+      setActionError('Timeout must be a positive number of seconds.');
+      return;
+    }
+
+    if (!Number.isFinite(memory) || memory <= 0) {
+      setActionError('Memory limit must be a positive number of MB.');
+      return;
+    }
+
+    if (!Number.isFinite(cpu) || cpu <= 0) {
+      setActionError('CPU limit must be a positive number of cores.');
+      return;
+    }
+
     setRunning(true);
     setProgressEvents([]);
-    try {
-      const parsedSeeds = seedsInput
-        .split(',')
-        .map((s) => parseInt(s.trim(), 10))
-        .filter((n) => !isNaN(n));
 
+    try {
       const payload = {
         graph_version_id: activeVersionId || null,
-        seeds: parsedSeeds.length > 0 ? parsedSeeds : [42, 123, 7],
+        seeds: parsedSeeds,
         config_overrides: {
-          default_timeout_seconds: parseInt(timeoutSec, 10) || 600,
-          default_memory_limit_mb: parseInt(memMb, 10) || 2048,
-          default_cpu_limit: parseFloat(cpuLimit) || 2.0,
+          default_timeout_seconds: timeout,
+          default_memory_limit_mb: memory,
+          default_cpu_limit: cpu,
         },
         skip_feasibility: false,
       };
 
-      const res = await api.submitExecution(experimentId, payload);
+      await api.submitExecution(experimentId, payload);
       onRefreshExecution();
     } catch (err) {
-      alert('Execution launch failed: ' + err.message);
-    } finally {
       setRunning(false);
+      setActionError(
+        `Execution launch failed: ${err?.message || 'Unknown error'}`
+      );
     }
   }
 
   async function handleResume() {
     if (!exec) return;
+
+    setActionError('');
     setResuming(true);
+
     try {
-      await api.resumeExecution(experimentId, exec.execution_id, {
-        retry_failed: true,
-        additional_seeds: [],
-      });
+      await api.resumeExecution(
+        experimentId,
+        exec.execution_id,
+        {
+          retry_failed: true,
+          additional_seeds: [],
+        }
+      );
+
       onRefreshExecution();
     } catch (err) {
-      alert('Resume failed: ' + err.message);
+      setActionError(
+        `Resume failed: ${err?.message || 'Unknown error'}`
+      );
     } finally {
       setResuming(false);
     }
@@ -95,183 +225,423 @@ export default function RunnerTab({
 
   async function handleCancel() {
     if (!exec) return;
+
+    setActionError('');
     setCancelling(true);
+
     try {
-      await api.cancelExecution(experimentId, exec.execution_id);
+      await api.cancelExecution(
+        experimentId,
+        exec.execution_id
+      );
+
       onRefreshExecution();
     } catch (err) {
-      alert('Cancel failed: ' + err.message);
+      setActionError(
+        `Cancel failed: ${err?.message || 'Unknown error'}`
+      );
     } finally {
       setCancelling(false);
     }
   }
 
+  function openNodeLogs(nodeId, seed, nodeResult) {
+    setSelectedNodeLogs({
+      nodeId,
+      seed,
+      stdout: nodeResult.stdout,
+      stderr: nodeResult.stderr,
+    });
+  }
+
+  const seedRuns = exec?.seed_runs || [];
+
+  const completedSeeds = seedRuns.filter(
+    (seed) => seed.status === 'completed'
+  ).length;
+
+  const failedSeeds = seedRuns.filter((seed) =>
+    ['failed', 'timed_out', 'resource_exhausted'].includes(
+      seed.status
+    )
+  ).length;
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-      {/* Execution Launch Controls */}
-      <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
-          <div>
-            <h4 style={{ fontSize: '1rem', fontWeight: 600 }}>Multi-Seed Execution Controls</h4>
-            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-              Runs each seed in an isolated Docker container with multi-framework determinism.
-            </p>
+    <div className="cg-runner">
+      <section className="cg-runner-panel cg-runner-launch-panel">
+        <div className="cg-runner-panel-head">
+          <div className="cg-runner-title-group">
+            <span className="cg-runner-icon-box">
+              <Play size={18} />
+            </span>
+
+            <div>
+              <div className="cg-runner-kicker">
+                EXECUTION ENVIRONMENT / 01
+              </div>
+
+              <h2>Multi-seed execution</h2>
+
+              <p>
+                Run isolated experiment trials with controlled
+                compute limits.
+              </p>
+            </div>
           </div>
 
-          <div style={{ display: 'flex', gap: '0.6rem' }}>
-            {exec && exec.status === 'running' && (
-              <button className="btn btn-danger btn-sm" onClick={handleCancel} disabled={cancelling}>
-                <StopCircle size={14} /> Cancel Run
+          <div className="cg-runner-main-actions">
+            {isActive && (
+              <button
+                type="button"
+                className="cg-runner-button cg-runner-button-danger"
+                onClick={handleCancel}
+                disabled={cancelling}
+              >
+                {cancelling ? (
+                  <Loader2 size={15} className="cg-runner-spin" />
+                ) : (
+                  <StopCircle size={15} />
+                )}
+
+                {cancelling ? 'Cancelling…' : 'Cancel run'}
               </button>
             )}
-            {exec && (exec.status === 'failed' || exec.status === 'partially_completed') && (
-              <button className="btn btn-secondary btn-sm" onClick={handleResume} disabled={resuming}>
-                <RotateCcw size={14} /> Retry / Resume Failed Seeds
-              </button>
-            )}
-            <button className="btn btn-primary" onClick={handleLaunch} disabled={running}>
-              {running ? (
+
+            {exec &&
+              ['failed', 'partially_completed'].includes(exec.status) && (
+                <button
+                  type="button"
+                  className="cg-runner-button cg-runner-button-secondary"
+                  onClick={handleResume}
+                  disabled={resuming}
+                >
+                  {resuming ? (
+                    <Loader2 size={15} className="cg-runner-spin" />
+                  ) : (
+                    <RotateCcw size={15} />
+                  )}
+
+                  {resuming ? 'Resuming…' : 'Retry failed seeds'}
+                </button>
+              )}
+
+            <button
+              type="button"
+              className="cg-runner-button cg-runner-button-primary"
+              onClick={handleLaunch}
+              disabled={running || isActive}
+            >
+              {running || isActive ? (
                 <>
-                  <Loader2 size={16} className="spin" /> Executing Pipeline...
+                  <Loader2 size={16} className="cg-runner-spin" />
+                  Executing pipeline…
                 </>
               ) : (
                 <>
-                  <Play size={16} /> Launch Multi-Seed Execution
+                  <Play size={15} fill="currentColor" />
+                  Launch execution
+                  <Sparkles size={14} />
                 </>
               )}
             </button>
           </div>
         </div>
 
-        {/* Configuration Inputs */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.75rem' }}>
-          <div>
-            <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.3rem' }}>
-              Execution Seeds (Comma-separated)
+        {actionError && (
+          <div className="cg-runner-alert" role="alert">
+            <AlertCircle size={16} />
+
+            <span>{actionError}</span>
+
+            <button
+              type="button"
+              onClick={() => setActionError('')}
+              aria-label="Dismiss message"
+            >
+              <X size={15} />
+            </button>
+          </div>
+        )}
+
+        <div className="cg-runner-config-grid">
+          <div className="cg-runner-field cg-runner-seeds-field">
+            <label htmlFor="cg-runner-seeds">
+              Execution seeds
             </label>
-            <input
-              type="text"
-              className="input"
-              style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
-              value={seedsInput}
-              onChange={(e) => setSeedsInput(e.target.value)}
-              placeholder="42, 123, 7"
-            />
+
+            <div className="cg-runner-input-shell">
+              <GitBranch size={15} />
+
+              <input
+                id="cg-runner-seeds"
+                type="text"
+                value={seedsInput}
+                onChange={(event) =>
+                  setSeedsInput(event.target.value)
+                }
+                placeholder="42, 123, 7"
+                disabled={running || isActive}
+              />
+            </div>
+
+            <small>
+              {parsedSeeds.length} valid seed
+              {parsedSeeds.length === 1 ? '' : 's'} detected
+            </small>
           </div>
 
-          <div>
-            <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.3rem' }}>
-              Timeout per Node (seconds)
+          <div className="cg-runner-field">
+            <label htmlFor="cg-runner-timeout">
+              Timeout per node
             </label>
-            <input
-              type="number"
-              className="input"
-              style={{ width: '100%' }}
-              value={timeoutSec}
-              onChange={(e) => setTimeoutSec(e.target.value)}
-            />
+
+            <div className="cg-runner-input-shell">
+              <Timer size={15} />
+
+              <input
+                id="cg-runner-timeout"
+                type="number"
+                min="1"
+                value={timeoutSec}
+                onChange={(event) =>
+                  setTimeoutSec(event.target.value)
+                }
+                disabled={running || isActive}
+              />
+
+              <span className="cg-runner-input-unit">SEC</span>
+            </div>
+
+            <small>Maximum runtime for each DAG node</small>
           </div>
 
-          <div>
-            <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.3rem' }}>
-              Container RAM Limit (MB)
+          <div className="cg-runner-field">
+            <label htmlFor="cg-runner-memory">
+              Container memory
             </label>
-            <input
-              type="number"
-              className="input"
-              style={{ width: '100%' }}
-              value={memMb}
-              onChange={(e) => setMemMb(e.target.value)}
-            />
+
+            <div className="cg-runner-input-shell">
+              <MemoryStick size={15} />
+
+              <input
+                id="cg-runner-memory"
+                type="number"
+                min="1"
+                value={memMb}
+                onChange={(event) =>
+                  setMemMb(event.target.value)
+                }
+                disabled={running || isActive}
+              />
+
+              <span className="cg-runner-input-unit">MB</span>
+            </div>
+
+            <small>Memory cap per isolated container</small>
           </div>
 
-          <div>
-            <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.3rem' }}>
-              Container CPU Limit (Cores)
+          <div className="cg-runner-field">
+            <label htmlFor="cg-runner-cpu">
+              Container CPU limit
             </label>
-            <input
-              type="text"
-              className="input"
-              style={{ width: '100%' }}
-              value={cpuLimit}
-              onChange={(e) => setCpuLimit(e.target.value)}
-            />
+
+            <div className="cg-runner-input-shell">
+              <Cpu size={15} />
+
+              <input
+                id="cg-runner-cpu"
+                type="number"
+                min="0.1"
+                step="0.1"
+                value={cpuLimit}
+                onChange={(event) =>
+                  setCpuLimit(event.target.value)
+                }
+                disabled={running || isActive}
+              />
+
+              <span className="cg-runner-input-unit">CORES</span>
+            </div>
+
+            <small>Compute allocation per container</small>
           </div>
         </div>
-      </div>
 
-      {/* Active Execution Status Banner */}
+        <div className="cg-runner-launch-foot">
+          <div className="cg-runner-foot-note">
+            <ShieldCheck size={15} />
+            <span>
+              Feasibility checks enabled before execution.
+            </span>
+          </div>
+
+          <span className="cg-runner-mono">
+            GRAPH REF: {activeVersionId || 'LATEST'}
+          </span>
+        </div>
+      </section>
+
       {exec && (
-        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-              <span className={`badge ${
-                exec.status === 'completed' ? 'badge-green' :
-                exec.status === 'running' ? 'badge-blue' :
-                exec.status === 'failed' ? 'badge-red' :
-                exec.status === 'timed_out' ? 'badge-amber' : 'badge-gray'
-              }`}>
-                {exec.status}
+        <section className="cg-runner-panel">
+          <div className="cg-runner-panel-head cg-runner-exec-head">
+            <div className="cg-runner-title-group">
+              <span className="cg-runner-icon-box cg-runner-icon-cyan">
+                <Activity size={18} />
               </span>
-              <strong style={{ fontSize: '0.95rem' }}>Execution: {exec.execution_id}</strong>
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>
-                Graph {exec.graph_version_id} ({exec.graph_hash?.slice(0, 8)})
-              </span>
+
+              <div>
+                <div className="cg-runner-kicker">
+                  RUN TELEMETRY / 02
+                </div>
+
+                <h2>Execution overview</h2>
+
+                <p className="cg-runner-mono">
+                  ID {exec.execution_id}
+                </p>
+              </div>
             </div>
 
-            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-              Total Runtime: <strong style={{ color: 'var(--text-main)' }}>{exec.total_runtime_seconds?.toFixed(2) || '—'}s</strong>
+            <StatusPill status={exec.status} />
+          </div>
+
+          <div className="cg-runner-exec-meta">
+            <div className="cg-runner-meta-item">
+              <span>GRAPH VERSION</span>
+              <strong>{exec.graph_version_id || '—'}</strong>
+            </div>
+
+            <div className="cg-runner-meta-item">
+              <span>GRAPH HASH</span>
+              <strong className="cg-runner-mono">
+                {exec.graph_hash?.slice(0, 12) || '—'}
+              </strong>
+            </div>
+
+            <div className="cg-runner-meta-item">
+              <span>TOTAL RUNTIME</span>
+              <strong>
+                {exec.total_runtime_seconds != null
+                  ? `${exec.total_runtime_seconds.toFixed(2)}s`
+                  : '—'}
+              </strong>
+            </div>
+
+            <div className="cg-runner-meta-item">
+              <span>SEEDS COMPLETED</span>
+              <strong>
+                {completedSeeds}
+                <small> / {seedRuns.length}</small>
+              </strong>
             </div>
           </div>
 
-          {exec.error_summary && (
-            <div style={{
-              background: 'rgba(239, 68, 68, 0.1)',
-              border: '1px solid rgba(239, 68, 68, 0.3)',
-              borderRadius: '0.375rem',
-              padding: '0.75rem',
-              color: '#f87171',
-              fontSize: '0.8rem',
-            }}>
-              <strong>Execution Notice:</strong> {exec.error_summary}
+          {seedRuns.length > 0 && (
+            <div
+              className="cg-runner-progress-track"
+              aria-label="Completed seeds progress"
+            >
+              <span
+                style={{
+                  width: `${Math.min(
+                    100,
+                    (completedSeeds / seedRuns.length) * 100
+                  )}%`,
+                }}
+              />
             </div>
           )}
 
-          {/* Aggregated Scientific Metrics */}
-          {exec.aggregated_metrics && exec.aggregated_metrics.length > 0 && (
-            <div>
-              <h5 style={{ fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.5rem', color: 'var(--text-muted)' }}>
-                Aggregated Scientific Metrics (Valid Completed Runs Only)
-              </h5>
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', fontSize: '0.825rem', borderCollapse: 'collapse' }}>
+          {failedSeeds > 0 && (
+            <div className="cg-runner-warning-line">
+              <AlertCircle size={15} />
+
+              <span>
+                {failedSeeds} seed{failedSeeds === 1 ? '' : 's'}{' '}
+                failed, timed out, or exhausted resources.
+              </span>
+            </div>
+          )}
+
+          {exec.error_summary && (
+            <div className="cg-runner-alert">
+              <AlertCircle size={16} />
+
+              <span>
+                <strong>Execution notice:</strong>{' '}
+                {exec.error_summary}
+              </span>
+            </div>
+          )}
+
+          {exec.aggregated_metrics?.length > 0 && (
+            <div className="cg-runner-data-section">
+              <div className="cg-runner-subhead">
+                <div>
+                  <div className="cg-runner-kicker">
+                    STATISTICAL SUMMARY
+                  </div>
+
+                  <h3>Aggregated scientific metrics</h3>
+                </div>
+
+                <span className="cg-runner-subhead-note">
+                  Completed runs only
+                </span>
+              </div>
+
+              <div className="cg-runner-table-wrap">
+                <table className="cg-runner-table">
                   <thead>
-                    <tr style={{ color: 'var(--text-muted)', borderBottom: '1px solid var(--border)' }}>
-                      <th style={{ padding: '0.5rem' }}>Metric</th>
-                      <th style={{ padding: '0.5rem' }}>Mean</th>
-                      <th style={{ padding: '0.5rem' }}>Std Dev</th>
-                      <th style={{ padding: '0.5rem' }}>Min</th>
-                      <th style={{ padding: '0.5rem' }}>Max</th>
-                      <th style={{ padding: '0.5rem' }}>Completed Seeds</th>
-                      <th style={{ padding: '0.5rem' }}>Integrity</th>
+                    <tr>
+                      <th>Metric</th>
+                      <th>Mean</th>
+                      <th>Std dev</th>
+                      <th>Min</th>
+                      <th>Max</th>
+                      <th>Seeds</th>
+                      <th>Integrity</th>
                     </tr>
                   </thead>
+
                   <tbody>
-                    {exec.aggregated_metrics.map((m) => (
-                      <tr key={m.metric_name} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.04)' }}>
-                        <td style={{ padding: '0.5rem', fontWeight: 600 }}>{m.metric_name}</td>
-                        <td style={{ padding: '0.5rem', fontFamily: 'var(--font-mono)', color: 'var(--accent-cyan)' }}>
-                          {m.mean !== null ? m.mean.toFixed(4) : '—'}
+                    {exec.aggregated_metrics.map((metric) => (
+                      <tr key={metric.metric_name}>
+                        <td className="cg-runner-metric-name">
+                          {metric.metric_name}
                         </td>
-                        <td style={{ padding: '0.5rem', fontFamily: 'var(--font-mono)' }}>
-                          {m.std !== null ? m.std.toFixed(4) : '—'}
+
+                        <td className="cg-runner-value">
+                          <MetricValue value={metric.mean} />
                         </td>
-                        <td style={{ padding: '0.5rem', fontFamily: 'var(--font-mono)' }}>{m.min_val ?? '—'}</td>
-                        <td style={{ padding: '0.5rem', fontFamily: 'var(--font-mono)' }}>{m.max_val ?? '—'}</td>
-                        <td style={{ padding: '0.5rem' }}>{m.num_completed} / {m.num_total}</td>
-                        <td style={{ padding: '0.5rem' }}>
-                          <span className={`badge ${m.is_complete ? 'badge-green' : 'badge-amber'}`}>
-                            {m.is_complete ? 'Complete' : 'Incomplete Sample'}
+
+                        <td className="cg-runner-value">
+                          <MetricValue value={metric.std} />
+                        </td>
+
+                        <td className="cg-runner-value">
+                          <MetricValue value={metric.min_val} />
+                        </td>
+
+                        <td className="cg-runner-value">
+                          <MetricValue value={metric.max_val} />
+                        </td>
+
+                        <td>
+                          {metric.num_completed} / {metric.num_total}
+                        </td>
+
+                        <td>
+                          <span
+                            className={`cg-runner-integrity ${
+                              metric.is_complete
+                                ? 'is-complete'
+                                : 'is-incomplete'
+                            }`}
+                          >
+                            {metric.is_complete
+                              ? 'Complete'
+                              : 'Incomplete'}
                           </span>
                         </td>
                       </tr>
@@ -280,177 +650,322 @@ export default function RunnerTab({
                 </table>
               </div>
 
-              {exec.aggregated_metrics.some((m) => !m.is_complete) && (
-                <p style={{ fontSize: '0.75rem', color: '#fbbf24', marginTop: '0.5rem' }}>
-                  ⚠️ Incomplete runs are excluded and never treated as zero-valued. Interpret incomplete statistics with caution.
-                </p>
+              {exec.aggregated_metrics.some(
+                (metric) => !metric.is_complete
+              ) && (
+                <div className="cg-runner-stat-note">
+                  <AlertCircle size={14} />
+                  Incomplete runs are excluded, not treated as
+                  zero-valued. Interpret these statistics with caution.
+                </div>
               )}
             </div>
           )}
 
-          {/* Per-Seed Independent Runs */}
-          <div>
-            <h5 style={{ fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.65rem', color: 'var(--text-muted)' }}>
-              Independent Seed Execution Records ({exec.seed_runs?.length || 0})
-            </h5>
+          <div className="cg-runner-data-section">
+            <div className="cg-runner-subhead">
+              <div>
+                <div className="cg-runner-kicker">
+                  INDEPENDENT TRIALS
+                </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
-              {(exec.seed_runs || []).map((sr) => {
-                const isExpanded = expandedSeed === sr.seed;
-                return (
-                  <div key={sr.seed} style={{
-                    background: 'rgba(255, 255, 255, 0.02)',
-                    border: '1px solid var(--border)',
-                    borderRadius: '0.5rem',
-                    overflow: 'hidden',
-                  }}>
-                    <div 
-                      onClick={() => setExpandedSeed(isExpanded ? null : sr.seed)}
-                      style={{
-                        padding: '0.75rem 1rem',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        cursor: 'pointer',
-                        background: isExpanded ? 'rgba(255, 255, 255, 0.04)' : 'transparent',
-                      }}
+                <h3>
+                  Seed execution records{' '}
+                  <span className="cg-runner-count">
+                    {seedRuns.length}
+                  </span>
+                </h3>
+              </div>
+
+              <span className="cg-runner-subhead-note">
+                Select a seed to inspect its DAG nodes
+              </span>
+            </div>
+
+            {seedRuns.length === 0 ? (
+              <div className="cg-runner-empty">
+                <Clock size={18} />
+                <span>
+                  Seed execution records will appear here when available.
+                </span>
+              </div>
+            ) : (
+              <div className="cg-runner-seed-list">
+                {seedRuns.map((seedRun) => {
+                  const isExpanded =
+                    expandedSeed === seedRun.seed;
+
+                  const metricValues = seedRun.metrics?.values
+                    ? Object.entries(seedRun.metrics.values)
+                    : [];
+
+                  return (
+                    <article
+                      className={`cg-runner-seed${
+                        isExpanded ? ' is-expanded' : ''
+                      }`}
+                      key={seedRun.seed}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                        {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                        <strong style={{ fontSize: '0.9rem', fontFamily: 'var(--font-mono)' }}>Seed {sr.seed}</strong>
-                        <span className={`badge ${
-                          sr.status === 'completed' ? 'badge-green' :
-                          sr.status === 'running' ? 'badge-blue' :
-                          sr.status === 'timed_out' ? 'badge-amber' :
-                          sr.status === 'resource_exhausted' ? 'badge-purple' : 'badge-red'
-                        }`}>
-                          {sr.status}
+                      <button
+                        type="button"
+                        className="cg-runner-seed-toggle"
+                        onClick={() =>
+                          setExpandedSeed(
+                            isExpanded ? null : seedRun.seed
+                          )
+                        }
+                        aria-expanded={isExpanded}
+                      >
+                        <span className="cg-runner-seed-chevron">
+                          {isExpanded ? (
+                            <ChevronDown size={16} />
+                          ) : (
+                            <ChevronRight size={16} />
+                          )}
                         </span>
-                        {sr.failure_reason && sr.failure_reason !== 'none' && (
-                          <span style={{ fontSize: '0.75rem', color: '#f87171' }}>
-                            ({sr.failure_reason})
-                          </span>
-                        )}
-                      </div>
 
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', fontSize: '0.8rem' }}>
-                        {sr.metrics?.values && Object.entries(sr.metrics.values).map(([mk, mv]) => (
-                          <span key={mk} style={{ color: 'var(--accent-cyan)', fontFamily: 'var(--font-mono)' }}>
-                            {mk}: {typeof mv === 'number' ? mv.toFixed(3) : String(mv)}
-                          </span>
-                        ))}
-                        <span style={{ color: 'var(--text-dim)' }}>
-                          {sr.runtime_seconds !== null ? `${sr.runtime_seconds.toFixed(2)}s` : '—'}
+                        <span className="cg-runner-seed-name">
+                          Seed {seedRun.seed}
                         </span>
-                      </div>
-                    </div>
 
-                    {/* Node Breakdown for Expanded Seed */}
-                    {isExpanded && sr.node_results && (
-                      <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid var(--border)' }}>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.5rem', fontWeight: 600 }}>
-                          DAG Node Breakdown for Seed {sr.seed}:
-                        </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '0.5rem' }}>
-                          {Object.entries(sr.node_results).map(([nid, nr]) => (
-                            <div key={nid} style={{
-                              background: 'rgba(0, 0, 0, 0.3)',
-                              border: '1px solid var(--border)',
-                              borderRadius: '0.375rem',
-                              padding: '0.6rem',
-                              fontSize: '0.775rem',
-                            }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.3rem' }}>
-                                <strong style={{ color: '#e2e8f0' }}>{nid}</strong>
-                                <span className={`badge ${
-                                  nr.status === 'completed' ? 'badge-green' :
-                                  nr.status === 'timed_out' ? 'badge-amber' : 'badge-red'
-                                }`}>
-                                  {nr.status}
-                                </span>
-                              </div>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-dim)', fontSize: '0.725rem' }}>
-                                <span>Exit code: {nr.exit_code ?? '—'}</span>
-                                {nr.cache_hit && <span className="badge badge-purple btn-sm">Cache Hit</span>}
-                                <span>{nr.runtime_seconds?.toFixed(2) || '0'}s</span>
-                              </div>
-                              {(nr.stdout || nr.stderr) && (
-                                <button 
-                                  className="btn btn-secondary btn-sm"
-                                  style={{ marginTop: '0.4rem', width: '100%', fontSize: '0.7rem' }}
-                                  onClick={() => setSelectedNodeLogs({ nodeId: nid, seed: sr.seed, stdout: nr.stdout, stderr: nr.stderr })}
-                                >
-                                  <Terminal size={12} /> View Logs
-                                </button>
-                              )}
-                            </div>
+                        <StatusPill status={seedRun.status} />
+
+                        {seedRun.failure_reason &&
+                          seedRun.failure_reason !== 'none' && (
+                            <span className="cg-runner-failure-reason">
+                              {seedRun.failure_reason}
+                            </span>
+                          )}
+
+                        <span className="cg-runner-seed-metrics">
+                          {metricValues.map(([key, value]) => (
+                            <span key={key}>
+                              {key}:{' '}
+                              {typeof value === 'number'
+                                ? value.toFixed(3)
+                                : String(value)}
+                            </span>
                           ))}
+                        </span>
+
+                        <span className="cg-runner-seed-runtime">
+                          {seedRun.runtime_seconds != null
+                            ? `${seedRun.runtime_seconds.toFixed(2)}s`
+                            : '—'}
+                        </span>
+                      </button>
+
+                      {isExpanded && seedRun.node_results && (
+                        <div className="cg-runner-node-area">
+                          <div className="cg-runner-node-area-label">
+                            DAG NODE BREAKDOWN
+                            <span>SEED {seedRun.seed}</span>
+                          </div>
+
+                          <div className="cg-runner-node-grid">
+                            {Object.entries(seedRun.node_results).map(
+                              ([nodeId, nodeResult]) => (
+                                <div
+                                  className="cg-runner-node-card"
+                                  key={nodeId}
+                                >
+                                  <div className="cg-runner-node-head">
+                                    <strong>{nodeId}</strong>
+                                    <StatusPill
+                                      status={nodeResult.status}
+                                    />
+                                  </div>
+
+                                  <div className="cg-runner-node-meta">
+                                    <span>
+                                      Exit code:{' '}
+                                      {nodeResult.exit_code ?? '—'}
+                                    </span>
+
+                                    <span>
+                                      {nodeResult.runtime_seconds != null
+                                        ? `${nodeResult.runtime_seconds.toFixed(2)}s`
+                                        : '—'}
+                                    </span>
+                                  </div>
+
+                                  <div className="cg-runner-node-foot">
+                                    {nodeResult.cache_hit && (
+                                      <span className="cg-runner-cache">
+                                        CACHE HIT
+                                      </span>
+                                    )}
+
+                                    {(nodeResult.stdout ||
+                                      nodeResult.stderr) && (
+                                      <button
+                                        type="button"
+                                        className="cg-runner-log-button"
+                                        onClick={() =>
+                                          openNodeLogs(
+                                            nodeId,
+                                            seedRun.seed,
+                                            nodeResult
+                                          )
+                                        }
+                                      >
+                                        <Terminal size={13} />
+                                        View logs
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              )
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            )}
           </div>
-        </div>
+        </section>
       )}
 
-      {/* Live Progress Event Stream */}
       {progressEvents.length > 0 && (
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-            <h5 style={{ fontSize: '0.85rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-              <Terminal size={14} color="var(--accent-cyan)" /> Live Execution Event Log
-            </h5>
-            <span style={{ fontSize: '0.725rem', color: 'var(--text-dim)' }}>{progressEvents.length} events</span>
+        <section className="cg-runner-panel cg-runner-events-panel">
+          <div className="cg-runner-panel-head cg-runner-events-head">
+            <div className="cg-runner-title-group">
+              <span className="cg-runner-icon-box cg-runner-icon-cyan">
+                <Terminal size={18} />
+              </span>
+
+              <div>
+                <div className="cg-runner-kicker">
+                  LIVE TELEMETRY / 03
+                </div>
+
+                <h2>Execution event stream</h2>
+              </div>
+            </div>
+
+            <span className="cg-runner-event-count">
+              {progressEvents.length} EVENTS
+            </span>
           </div>
 
-          <div className="terminal">
-            {progressEvents.map((evt, idx) => (
-              <div key={idx} style={{ marginBottom: '0.2rem' }}>
-                <span style={{ color: 'var(--text-dim)' }}>[{new Date(evt.timestamp).toLocaleTimeString()}]</span>{' '}
-                <span style={{ color: evt.event_type.includes('fail') ? '#f87171' : evt.event_type.includes('hit') ? '#c084fc' : '#38bdf8' }}>
-                  {evt.event_type}:
-                </span>{' '}
-                <span>{evt.message}</span>
-              </div>
-            ))}
+          <div className="cg-runner-terminal">
+            {progressEvents.map((event, index) => {
+              const type = String(
+                event.event_type || 'event'
+              ).toLowerCase();
+
+              const eventClass = type.includes('fail')
+                ? 'is-failure'
+                : type.includes('hit')
+                  ? 'is-cache'
+                  : 'is-info';
+
+              return (
+                <div
+                  className="cg-runner-event"
+                  key={`${event.timestamp}-${index}`}
+                >
+                  <time>
+                    {event.timestamp
+                      ? new Date(event.timestamp).toLocaleTimeString()
+                      : '--:--:--'}
+                  </time>
+
+                  <span
+                    className={`cg-runner-event-type ${eventClass}`}
+                  >
+                    {event.event_type || 'event'}
+                  </span>
+
+                  <span className="cg-runner-event-message">
+                    {event.message}
+                  </span>
+                </div>
+              );
+            })}
           </div>
-        </div>
+        </section>
       )}
 
-      {/* Node Log Viewer Modal */}
       {selectedNodeLogs && (
-        <div className="modal-overlay">
-          <div className="modal-content">
-            <div className="modal-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <Terminal size={18} color="var(--accent-blue)" />
-                <h4 style={{ fontSize: '0.95rem', fontWeight: 600 }}>
-                  Logs: {selectedNodeLogs.nodeId} (Seed {selectedNodeLogs.seed})
-                </h4>
-              </div>
-              <button className="btn btn-secondary btn-sm" onClick={() => setSelectedNodeLogs(null)}>✕</button>
-            </div>
-            <div className="modal-body">
-              {selectedNodeLogs.stdout && (
-                <div style={{ marginBottom: '0.75rem' }}>
-                  <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#34d399', marginBottom: '0.3rem' }}>STDOUT</div>
-                  <pre className="terminal" style={{ maxHeight: '200px' }}>{selectedNodeLogs.stdout}</pre>
-                </div>
-              )}
-              {selectedNodeLogs.stderr && (
+        <div
+          className="cg-runner-log-overlay"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setSelectedNodeLogs(null);
+            }
+          }}
+        >
+          <section
+            className="cg-runner-log-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cg-runner-log-title"
+          >
+            <header className="cg-runner-log-header">
+              <div className="cg-runner-title-group">
+                <span className="cg-runner-icon-box cg-runner-icon-cyan">
+                  <Terminal size={17} />
+                </span>
+
                 <div>
-                  <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#f87171', marginBottom: '0.3rem' }}>STDERR</div>
-                  <pre className="terminal" style={{ maxHeight: '200px', color: '#fca5a5' }}>{selectedNodeLogs.stderr}</pre>
+                  <div className="cg-runner-kicker">NODE OUTPUT</div>
+
+                  <h2 id="cg-runner-log-title">
+                    {selectedNodeLogs.nodeId}
+                    <span> · Seed {selectedNodeLogs.seed}</span>
+                  </h2>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                className="cg-runner-close"
+                onClick={() => setSelectedNodeLogs(null)}
+                aria-label="Close logs"
+              >
+                <X size={17} />
+              </button>
+            </header>
+
+            <div className="cg-runner-log-content">
+              {selectedNodeLogs.stdout && (
+                <div className="cg-runner-log-block">
+                  <div className="cg-runner-log-label is-stdout">
+                    STDOUT
+                  </div>
+
+                  <pre>{selectedNodeLogs.stdout}</pre>
+                </div>
+              )}
+
+              {selectedNodeLogs.stderr && (
+                <div className="cg-runner-log-block">
+                  <div className="cg-runner-log-label is-stderr">
+                    STDERR
+                  </div>
+
+                  <pre className="is-stderr">
+                    {selectedNodeLogs.stderr}
+                  </pre>
                 </div>
               )}
             </div>
-            <div className="modal-footer">
-              <button className="btn btn-secondary" onClick={() => setSelectedNodeLogs(null)}>Close</button>
-            </div>
-          </div>
+
+            <footer className="cg-runner-log-footer">
+              <button
+                type="button"
+                className="cg-runner-button cg-runner-button-secondary"
+                onClick={() => setSelectedNodeLogs(null)}
+              >
+                Close logs
+              </button>
+            </footer>
+          </section>
         </div>
       )}
     </div>

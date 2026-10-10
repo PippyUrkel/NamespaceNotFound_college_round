@@ -1,0 +1,412 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+.feasibility-workspace {
+--fg-void: #090D0E;
+--fg-sidebar: #0D1315;
+--fg-surface: #111719;
+--fg-node: #151E20;
+--fg-elevated: #1C2729;
+--fg-border: #293638;
+--fg-lime: #D7FF64;
+--fg-cyan: #65DFF2;
+--fg-violet: #B6A0FF;
+--fg-amber: #FFB86B;
+--fg-coral: #FF7185;
+--fg-green: #61E6A6;
+--fg-text: #EAF2EF;
+--fg-muted: #849397;
+color: var(--fg-text);
+font-family: 'Poppins', sans-serif;
+display: flex;
+flex-direction: column;
+gap: 22px;
+min-width: 0;
+}
+
+.feasibility-workspace *,
+.feasibility-workspace *::before,
+.feasibility-workspace *::after {
+box-sizing: border-box;
+}
+
+.feasibility-heading,
+.feasibility-section__heading {
+display: flex;
+align-items: flex-end;
+justify-content: space-between;
+gap: 16px;
+}
+
+.feasibility-eyebrow {
+margin: 0 0 7px;
+color: var(--fg-muted);
+font-family: 'IBM Plex Mono', monospace;
+font-size: 10px;
+font-weight: 500;
+letter-spacing: .12em;
+line-height: 1.5;
+}
+
+.feasibility-heading h2,
+.feasibility-section__heading h3,
+.feasibility-verdict h3,
+.feasibility-empty h3 {
+margin: 0;
+color: var(--fg-text);
+font-weight: 600;
+letter-spacing: -.025em;
+}
+
+.feasibility-heading h2 {
+font-size: clamp(21px, 2vw, 27px);
+}
+
+.feasibility-heading__copy {
+color: var(--fg-muted);
+font-size: 12px;
+margin: 7px 0 0;
+line-height: 1.7;
+}
+
+.feasibility-heading__stamp {
+display: inline-flex;
+align-items: center;
+gap: 8px;
+flex: 0 0 auto;
+padding: 8px 10px;
+border: 1px solid var(--fg-border);
+border-radius: 5px;
+color: var(--fg-lime);
+background: rgba(215, 255, 100, .035);
+font: 10px 'IBM Plex Mono', monospace;
+letter-spacing: .08em;
+}
+
+.feasibility-verdict {
+display: grid;
+grid-template-columns: 42px minmax(0, 1fr);
+gap: 15px;
+padding: 20px;
+border: 1px solid var(--fg-border);
+border-radius: 9px;
+background: var(--fg-surface);
+position: relative;
+overflow: hidden;
+}
+
+.feasibility-verdict::before {
+content: '';
+position: absolute;
+left: 0;
+top: 0;
+bottom: 0;
+width: 3px;
+background: currentColor;
+opacity: .9;
+}
+
+.feasibility-verdict--success { color: var(--fg-green); }
+.feasibility-verdict--warning { color: var(--fg-amber); }
+.feasibility-verdict--danger { color: var(--fg-coral); }
+
+.feasibility-verdict__mark {
+display: grid;
+place-items: center;
+width: 42px;
+height: 42px;
+border: 1px solid currentColor;
+border-radius: 7px;
+background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.feasibility-verdict__body { min-width: 0; }
+.feasibility-verdict__title-row {
+display: flex;
+align-items: flex-start;
+justify-content: space-between;
+gap: 14px;
+}
+
+.feasibility-verdict__title-row .feasibility-eyebrow { margin-bottom: 3px; }
+.feasibility-verdict h3 { font-size: 16px; color: var(--fg-text); }
+.feasibility-verdict__time {
+display: inline-flex;
+align-items: center;
+gap: 5px;
+flex: 0 0 auto;
+color: var(--fg-muted);
+font: 10px 'IBM Plex Mono', monospace;
+padding-top: 3px;
+}
+
+.feasibility-verdict__summary {
+max-width: 900px;
+margin: 9px 0 0;
+color: #A8B7B8;
+font-size: 12px;
+line-height: 1.8;
+}
+
+.feasibility-notes {
+margin-top: 15px;
+padding: 12px 13px;
+border: 1px solid var(--fg-border);
+border-radius: 5px;
+background: rgba(9, 13, 14, .42);
+}
+.feasibility-notes h4 {
+display: flex;
+align-items: center;
+gap: 7px;
+margin: 0 0 7px;
+font-size: 11px;
+font-weight: 600;
+}
+.feasibility-notes ul {
+margin: 0;
+padding-left: 17px;
+color: #B9C4C3;
+font-size: 11px;
+line-height: 1.8;
+overflow-wrap: anywhere;
+}
+.feasibility-notes--danger h4 { color: var(--fg-coral); }
+.feasibility-notes--warning h4 { color: var(--fg-amber); }
+
+.feasibility-section {
+min-width: 0;
+}
+.feasibility-section__heading {
+margin-bottom: 12px;
+align-items: center;
+}
+.feasibility-section__heading h3 {
+font-size: 15px;
+}
+.feasibility-section__count {
+color: var(--fg-muted);
+font: 10px 'IBM Plex Mono', monospace;
+letter-spacing: .08em;
+}
+
+.feasibility-resource-grid {
+display: grid;
+grid-template-columns: repeat(5, minmax(0, 1fr));
+gap: 10px;
+}
+.feasibility-resource {
+min-width: 0;
+min-height: 126px;
+padding: 14px;
+border: 1px solid var(--fg-border);
+border-radius: 7px;
+background: var(--fg-surface);
+transition: border-color .18s ease, transform .18s ease;
+}
+.feasibility-resource:hover {
+border-color: #405154;
+transform: translateY(-1px);
+}
+.feasibility-resource__top {
+display: flex;
+align-items: center;
+gap: 8px;
+margin-bottom: 17px;
+}
+.feasibility-resource__icon {
+display: grid;
+place-items: center;
+width: 28px;
+height: 28px;
+flex: 0 0 auto;
+border: 1px solid currentColor;
+border-radius: 5px;
+}
+.feasibility-resource--cyan .feasibility-resource__icon { color: var(--fg-cyan); background: rgba(101,223,242,.06); }
+.feasibility-resource--lime .feasibility-resource__icon { color: var(--fg-lime); background: rgba(215,255,100,.06); }
+.feasibility-resource--violet .feasibility-resource__icon { color: var(--fg-violet); background: rgba(182,160,255,.06); }
+.feasibility-resource--success .feasibility-resource__icon { color: var(--fg-green); background: rgba(97,230,166,.06); }
+.feasibility-resource--warning .feasibility-resource__icon { color: var(--fg-amber); background: rgba(255,184,107,.06); }
+.feasibility-resource--danger .feasibility-resource__icon { color: var(--fg-coral); background: rgba(255,113,133,.06); }
+.feasibility-resource--neutral .feasibility-resource__icon { color: var(--fg-muted); }
+.feasibility-resource__label {
+min-width: 0;
+color: var(--fg-muted);
+font-size: 10px;
+line-height: 1.4;
+}
+.feasibility-resource__value {
+color: var(--fg-text);
+font-size: clamp(15px, 1.35vw, 20px);
+font-weight: 600;
+line-height: 1.35;
+overflow-wrap: anywhere;
+}
+.feasibility-resource__detail {
+margin-top: 6px;
+color: #728286;
+font: 9px 'IBM Plex Mono', monospace;
+line-height: 1.6;
+overflow-wrap: anywhere;
+}
+.feasibility-unit {
+color: var(--fg-muted);
+font-size: 11px;
+font-weight: 400;
+}
+
+.feasibility-requirements {
+padding: 17px;
+border: 1px solid var(--fg-border);
+border-radius: 8px;
+background: var(--fg-surface);
+}
+.feasibility-requirements .feasibility-section__heading { margin-bottom: 17px; }
+.feasibility-runtime {
+display: flex;
+align-items: center;
+gap: 7px;
+color: var(--fg-muted);
+font-size: 10px;
+white-space: nowrap;
+}
+.feasibility-runtime svg { color: var(--fg-cyan); }
+.feasibility-runtime strong {
+color: var(--fg-cyan);
+font: 500 11px 'IBM Plex Mono', monospace;
+}
+.feasibility-table-wrap {
+width: 100%;
+overflow-x: auto;
+border: 1px solid var(--fg-border);
+border-radius: 5px;
+}
+.feasibility-table {
+width: 100%;
+border-collapse: collapse;
+text-align: left;
+font-size: 11px;
+white-space: nowrap;
+}
+.feasibility-table thead { background: #0D1315; }
+.feasibility-table th {
+padding: 11px 13px;
+color: var(--fg-muted);
+font: 10px 'IBM Plex Mono', monospace;
+font-weight: 500;
+letter-spacing: .035em;
+border-bottom: 1px solid var(--fg-border);
+}
+.feasibility-table td {
+padding: 12px 13px;
+color: #C9D4D1;
+border-bottom: 1px solid rgba(41, 54, 56, .65);
+}
+.feasibility-table tbody tr:last-child td { border-bottom: 0; }
+.feasibility-table tbody tr:hover { background: rgba(215, 255, 100, .025); }
+.feasibility-node-id {
+display: inline-block;
+padding: 4px 7px;
+border: 1px solid #3A4547;
+border-radius: 4px;
+color: var(--fg-lime);
+background: rgba(215,255,100,.035);
+font: 10px 'IBM Plex Mono', monospace;
+}
+.feasibility-table__unit { color: var(--fg-muted); font-size: 10px; }
+.feasibility-chip {
+display: inline-flex;
+align-items: center;
+gap: 6px;
+padding: 4px 7px;
+border: 1px solid var(--fg-border);
+border-radius: 4px;
+font: 9px 'IBM Plex Mono', monospace;
+}
+.feasibility-chip__dot {
+width: 5px;
+height: 5px;
+border-radius: 50%;
+background: currentColor;
+}
+.feasibility-chip--gpu { color: var(--fg-amber); border-color: rgba(255,184,107,.3); }
+.feasibility-chip--cpu { color: var(--fg-cyan); border-color: rgba(101,223,242,.25); }
+.feasibility-table-footer {
+display: flex;
+align-items: center;
+gap: 8px;
+margin-top: 13px;
+color: var(--fg-muted);
+font-size: 10px;
+}
+.feasibility-table-footer svg { color: var(--fg-green); flex: 0 0 auto; }
+.feasibility-table-footer__count {
+margin-left: auto;
+color: #718184;
+font: 9px 'IBM Plex Mono', monospace;
+letter-spacing: .08em;
+}
+
+.feasibility-empty {
+display: flex;
+flex-direction: column;
+align-items: center;
+justify-content: center;
+min-height: 260px;
+padding: 36px 24px;
+border: 1px dashed #354345;
+border-radius: 8px;
+background:
+    linear-gradient(rgba(215,255,100,.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(215,255,100,.018) 1px, transparent 1px),
+    var(--fg-surface);
+background-size: 24px 24px;
+text-align: center;
+}
+.feasibility-empty__icon {
+display: grid;
+place-items: center;
+width: 44px;
+height: 44px;
+margin-bottom: 17px;
+border: 1px solid var(--fg-border);
+border-radius: 8px;
+color: var(--fg-lime);
+background: var(--fg-node);
+}
+.feasibility-empty h3 { font-size: 16px; }
+.feasibility-empty > p:last-child {
+max-width: 410px;
+margin: 8px 0 0;
+color: var(--fg-muted);
+font-size: 12px;
+line-height: 1.8;
+}
+
+@media (max-width: 1100px) {
+.feasibility-resource-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+.feasibility-heading,
+.feasibility-section__heading {
+    align-items: flex-start;
+    flex-direction: column;
+}
+.feasibility-verdict { grid-template-columns: 34px minmax(0, 1fr); padding: 15px; gap: 11px; }
+.feasibility-verdict__mark { width: 34px; height: 34px; }
+.feasibility-verdict__title-row { flex-direction: column; gap: 8px; }
+.feasibility-resource-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.feasibility-requirements { padding: 12px; }
+.feasibility-runtime { flex-wrap: wrap; }
+}
+@media (max-width: 420px) {
+.feasibility-resource-grid { grid-template-columns: 1fr; }
+.feasibility-resource { min-height: auto; }
+.feasibility-resource__top { margin-bottom: 10px; }
+.feasibility-table-footer { align-items: flex-start; }
+}
+
+
+*::-webkit-scrollbar{
+    display: none;
+}

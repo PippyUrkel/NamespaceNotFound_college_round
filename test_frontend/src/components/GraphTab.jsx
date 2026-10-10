@@ -1,106 +1,452 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  GitFork, Sliders, History, Code2, Copy, Check, ArrowRight, 
-  ExternalLink, Layers, Sparkles, CheckCircle2, AlertTriangle, 
-  Wrench, ShieldCheck, RefreshCw 
+import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  ReactFlow,
+  Background,
+  Controls,
+  MiniMap,
+  Handle,
+  Position,
+  MarkerType,
+  Panel,
+  useNodesState,
+  useEdgesState,
+  BackgroundVariant,
+} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
+import {
+  GitFork,
+  SlidersHorizontal,
+  History,
+  Copy,
+  Check,
+  ArrowRight,
+  Layers3,
+  CheckCircle2,
+  AlertTriangle,
+  XCircle,
+  Wrench,
+  ShieldCheck,
+  RefreshCw,
+  Code2,
+  Hash,
+  GitBranch,
+  X,
+  FileCode2,
+  CircleHelp,
+  ChevronRight,
+  ChevronDown,
+  Maximize2,
+  PanelRightClose,
+  PanelRightOpen,
+  Database,
+  Box,
+  Braces,
+  Clock3,
 } from 'lucide-react';
 import { api } from '../api';
+import './GraphTab.css';
 
-export default function GraphTab({ 
-  experimentId, 
-  graph, 
-  versions, 
-  onVersionChange, 
-  onRefreshGraph 
-}) {
-  const [selectedNodeId, setSelectedNodeId] = useState(
-    graph?.nodes?.[0]?.id || 'setup_environment'
+const PROVENANCE = {
+  repository: { label: 'Repository', tone: 'repository' },
+  assumed: { label: 'Assumed', tone: 'assumed' },
+  tuned: { label: 'Tuned', tone: 'tuned' },
+  deterministic_synthesis: { label: 'Synthesized', tone: 'synthesized' },
+};
+
+const TYPE_ICONS = {
+  setup: Layers3,
+  environment: Layers3,
+  data: Database,
+  dataset: Database,
+  load: Database,
+  train: Code2,
+  model: Box,
+  evaluate: CheckCircle2,
+  metric: CheckCircle2,
+  save: FileCode2,
+  artifact: FileCode2,
+};
+
+function provenanceFor(node) {
+  const source = node?.provenance?.source || 'deterministic_synthesis';
+  return PROVENANCE[source] || {
+    label: String(source).replaceAll('_', ' '),
+    tone: 'synthesized',
+  };
+}
+
+function nodeIcon(node) {
+  const hint = `${node?.type || ''} ${node?.name || ''} ${node?.id || ''}`.toLowerCase();
+  const key = Object.keys(TYPE_ICONS).find((candidate) => hint.includes(candidate));
+  return key ? TYPE_ICONS[key] : Braces;
+}
+
+function getNodeParameters(node) {
+  if (node?.parameters && typeof node.parameters === 'object' && !Array.isArray(node.parameters)) {
+    return node.parameters;
+  }
+  return {};
+}
+
+function buildFlowLayout(rawNodes) {
+  const nodes = Array.isArray(rawNodes) ? rawNodes : [];
+  const ids = new Set(nodes.map((node) => String(node.id)));
+  const parents = new Map();
+  const children = new Map(nodes.map((node) => [String(node.id), []]));
+
+  nodes.forEach((node) => {
+    const id = String(node.id);
+    const upstream = Array.isArray(node.upstream)
+      ? node.upstream.map((item) => typeof item === 'string' ? item : item?.id).filter(Boolean).map(String)
+      : [];
+    const validParents = upstream.filter((parentId) => ids.has(parentId) && parentId !== id);
+    parents.set(id, validParents);
+    validParents.forEach((parentId) => children.get(parentId)?.push(id));
+  });
+
+  // Some graph payloads contain ordered nodes but no explicit upstream references.
+  // In that case, create a readable sequential pipeline rather than a disconnected canvas.
+  const hasExplicitRelationships = [...parents.values()].some((items) => items.length > 0);
+  if (!hasExplicitRelationships && nodes.length > 1) {
+    nodes.forEach((node, index) => {
+      const id = String(node.id);
+      if (index > 0) parents.set(id, [String(nodes[index - 1].id)]);
+      if (index < nodes.length - 1) children.get(id)?.push(String(nodes[index + 1].id));
+    });
+  }
+
+  // Assign a layer using the longest parent path. Cycles are bounded and surfaced
+  // without allowing layout to loop forever.
+  const layerById = new Map();
+  const visiting = new Set();
+  const getLayer = (id, depth = 0) => {
+    if (layerById.has(id)) return layerById.get(id);
+    if (visiting.has(id) || depth > nodes.length + 2) return 0;
+    visiting.add(id);
+    const upstream = parents.get(id) || [];
+    const layer = upstream.length ? Math.max(...upstream.map((parentId) => getLayer(parentId, depth + 1))) + 1 : 0;
+    visiting.delete(id);
+    layerById.set(id, layer);
+    return layer;
+  };
+  nodes.forEach((node) => getLayer(String(node.id)));
+
+  const byLayer = new Map();
+  nodes.forEach((node) => {
+    const layer = layerById.get(String(node.id)) || 0;
+    if (!byLayer.has(layer)) byLayer.set(layer, []);
+    byLayer.get(layer).push(node);
+  });
+
+  const positions = new Map();
+  [...byLayer.entries()].sort((a, b) => a[0] - b[0]).forEach(([layer, layerNodes]) => {
+    layerNodes.forEach((node, index) => {
+      positions.set(String(node.id), { x: 70 + layer * 300, y: 70 + index * 155 });
+    });
+  });
+
+  const flowNodes = nodes.map((node, index) => ({
+    id: String(node.id),
+    type: 'experimentNode',
+    position: positions.get(String(node.id)) || { x: 70, y: 70 + index * 155 },
+    data: { node, order: index + 1 },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
+  }));
+
+  const edges = [];
+  parents.forEach((upstreamIds, targetId) => {
+    upstreamIds.forEach((sourceId) => {
+      edges.push({
+        id: `${sourceId}__${targetId}`,
+        source: sourceId,
+        target: targetId,
+        type: 'smoothstep',
+        animated: false,
+        markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#718486' },
+        style: { stroke: '#526467', strokeWidth: 1.5 },
+      });
+    });
+  });
+
+  return { nodes: flowNodes, edges };
+}
+
+function ExperimentFlowNode({ data, selected }) {
+  const node = data.node;
+  const provenance = provenanceFor(node);
+  const Icon = nodeIcon(node);
+  const parameters = getNodeParameters(node);
+  const parameterCount = Object.keys(parameters).length;
+  const codeLines = typeof node.code === 'string' && node.code.length
+    ? node.code.split('\n').length
+    : 0;
+
+  return (
+    <article className={`cg-flow-node ${selected ? 'is-selected' : ''} cg-flow-node--${provenance.tone}`}>
+      <Handle type="target" position={Position.Left} className="cg-flow-handle" />
+      <div className="cg-flow-node__topline">
+        <span className="cg-flow-node__ordinal">{String(data.order).padStart(2, '0')}</span>
+        <span className={`cg-flow-node__icon cg-flow-node__icon--${provenance.tone}`}><Icon size={15} /></span>
+        <span className={`cg-flow-provenance cg-flow-provenance--${provenance.tone}`}>{provenance.label}</span>
+      </div>
+      <div className="cg-flow-node__title" title={node.name || node.id}>{node.name || node.id}</div>
+      <div className="cg-flow-node__id" title={node.id}>{node.id}</div>
+      <p className="cg-flow-node__description">{node.description || 'No node description provided.'}</p>
+      <div className="cg-flow-node__footer">
+        <span><Braces size={11} /> {node.type || 'process'}</span>
+        <span><SlidersHorizontal size={11} /> {parameterCount} params</span>
+        {codeLines > 0 && <span><Code2 size={11} /> {codeLines} lines</span>}
+      </div>
+      <Handle type="source" position={Position.Right} className="cg-flow-handle" />
+    </article>
   );
+}
+
+const nodeTypes = { experimentNode: memo(ExperimentFlowNode) };
+
+function Modal({ title, eyebrow, icon: Icon, onClose, className = '', children, footer }) {
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="graph-modal-backdrop" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <section className={`graph-modal ${className}`} role="dialog" aria-modal="true" aria-label={title}>
+        <header className="graph-modal__header">
+          <div className="graph-modal__title-wrap">
+            <span className="graph-modal__icon"><Icon size={18} /></span>
+            <div>
+              {eyebrow && <p className="graph-eyebrow">{eyebrow}</p>}
+              <h3>{title}</h3>
+            </div>
+          </div>
+          <button className="graph-icon-button" type="button" onClick={onClose} aria-label="Close dialog"><X size={17} /></button>
+        </header>
+        <div className="graph-modal__body">{children}</div>
+        {footer && <footer className="graph-modal__footer">{footer}</footer>}
+      </section>
+    </div>
+  );
+}
+
+function InspectorSection({ title, count, defaultOpen = true, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className="cg-inspector-section">
+      <button className="cg-inspector-section__toggle" type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+        <span>{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}{title}</span>
+        {count !== undefined && <span className="cg-inspector-section__count">{count}</span>}
+      </button>
+      {open && <div className="cg-inspector-section__content">{children}</div>}
+    </section>
+  );
+}
+
+function Inspector({ node, onClose, onCopyCode, copiedCode }) {
+  if (!node) return (
+    <aside className="cg-node-inspector cg-node-inspector--empty">
+      <div className="cg-inspector-empty-icon"><CircleHelp size={21} /></div>
+      <h3>Select a node</h3>
+      <p>Click any node on the canvas to inspect its configuration, parameters, code, and provenance.</p>
+    </aside>
+  );
+
+  const provenance = provenanceFor(node);
+  const parameters = getNodeParameters(node);
+  const inputs = node.inputs && typeof node.inputs === 'object' ? node.inputs : {};
+  const outputs = node.outputs && typeof node.outputs === 'object' ? node.outputs : {};
+  const metadata = node.metadata && typeof node.metadata === 'object' ? node.metadata : {};
+  const code = node.code || '';
+
+  return (
+    <aside className="cg-node-inspector">
+      <header className="cg-node-inspector__header">
+        <div>
+          <p className="graph-eyebrow">NODE INSPECTOR / SELECTED</p>
+          <h3>{node.name || node.id}</h3>
+        </div>
+        <button className="graph-icon-button" type="button" onClick={onClose} aria-label="Close node inspector"><PanelRightClose size={16} /></button>
+      </header>
+
+      <div className="cg-inspector-identity">
+        <span className="cg-inspector-node-mark"><Code2 size={16} /></span>
+        <div className="cg-inspector-identity__text">
+          <span className="cg-inspector-label">NODE ID</span>
+          <code>{node.id}</code>
+        </div>
+        <span className={`graph-provenance graph-provenance--${provenance.tone}`}>{provenance.label}</span>
+      </div>
+
+      {node.description && <p className="cg-inspector-description">{node.description}</p>}
+
+      <InspectorSection title="Configuration" count={Object.keys(metadata).length + 1}>
+        <div className="cg-inspector-kv"><span>Type</span><code>{node.type || 'unknown'}</code></div>
+        <div className="cg-inspector-kv"><span>Config hash</span><code>{node.config_hash || 'Not provided'}</code></div>
+        {Object.entries(metadata).map(([key, value]) => (
+          <div className="cg-inspector-kv" key={key}><span>{key.replaceAll('_', ' ')}</span><code>{formatValue(value)}</code></div>
+        ))}
+      </InspectorSection>
+
+      <InspectorSection title="Parameters" count={Object.keys(parameters).length}>
+        {Object.keys(parameters).length ? Object.entries(parameters).map(([key, value]) => (
+          <div className="cg-inspector-parameter" key={key}>
+            <span>{key}</span><code>{formatValue(value)}</code>
+          </div>
+        )) : <p className="cg-inspector-empty-copy">No explicit parameters recorded for this node.</p>}
+      </InspectorSection>
+
+      {(Object.keys(inputs).length > 0 || Object.keys(outputs).length > 0) && (
+        <InspectorSection title="Inputs & outputs" count={Object.keys(inputs).length + Object.keys(outputs).length}>
+          {Object.keys(inputs).length > 0 && <div className="cg-inspector-io"><span className="cg-inspector-label">INPUTS</span>{Object.entries(inputs).map(([key, value]) => <div className="cg-inspector-kv" key={`in-${key}`}><span>{key}</span><code>{formatValue(value)}</code></div>)}</div>}
+          {Object.keys(outputs).length > 0 && <div className="cg-inspector-io"><span className="cg-inspector-label">OUTPUTS</span>{Object.entries(outputs).map(([key, value]) => <div className="cg-inspector-kv" key={`out-${key}`}><span>{key}</span><code>{formatValue(value)}</code></div>)}</div>}
+        </InspectorSection>
+      )}
+
+      <InspectorSection title="Provenance" count={node.provenance ? Object.keys(node.provenance).length : 1}>
+        {node.provenance && typeof node.provenance === 'object' ? Object.entries(node.provenance).map(([key, value]) => (
+          <div className="cg-inspector-kv" key={key}><span>{key.replaceAll('_', ' ')}</span><code>{formatValue(value)}</code></div>
+        )) : <div className="cg-inspector-kv"><span>Source</span><code>{provenance.label}</code></div>}
+      </InspectorSection>
+
+      <InspectorSection title="Source code" count={code ? `${code.split('\n').length} lines` : 'Unavailable'} defaultOpen>
+        <div className="cg-inspector-code-heading">
+          <span><FileCode2 size={13} /> PYTHON SOURCE</span>
+          <button className="graph-button graph-button--quiet" type="button" onClick={() => onCopyCode(code)} disabled={!code}>
+            {copiedCode ? <Check size={13} /> : <Copy size={13} />}{copiedCode ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+        <pre className="cg-inspector-code"><code>{code || '# No code was included in the graph payload.'}</code></pre>
+      </InspectorSection>
+    </aside>
+  );
+}
+
+function formatValue(value) {
+  if (value === null) return 'null';
+  if (value === undefined) return '—';
+  if (typeof value === 'object') {
+    try { return JSON.stringify(value); } catch { return String(value); }
+  }
+  return String(value);
+}
+
+export default function GraphTab({ experimentId, graph, versions, onVersionChange, onRefreshGraph }) {
+  const rawNodes = graph?.nodes || [];
+  const [selectedNodeId, setSelectedNodeId] = useState('');
+  const [inspectorOpen, setInspectorOpen] = useState(true);
   const [copiedCode, setCopiedCode] = useState(false);
   const [showTuneModal, setShowTuneModal] = useState(false);
   const [showDiffModal, setShowDiffModal] = useState(false);
-
-  // Validation state
   const [validationReport, setValidationReport] = useState(null);
   const [validating, setValidating] = useState(false);
   const [remediating, setRemediating] = useState(false);
   const [showIssuesList, setShowIssuesList] = useState(true);
-
-  // Auto-validate on graph/version change
-  useEffect(() => {
-    if (experimentId && graph?.version_id) {
-      handleValidate(graph.version_id);
-    }
-  }, [experimentId, graph?.version_id]);
-
-  async function handleValidate(verId = null) {
-    setValidating(true);
-    try {
-      const rep = await api.validateGraph(experimentId, verId || graph?.version_id);
-      setValidationReport(rep);
-    } catch (err) {
-      console.error('Validation error:', err);
-    } finally {
-      setValidating(false);
-    }
-  }
-
-  async function handleRemediate() {
-    setRemediating(true);
-    try {
-      const res = await api.remediateGraph(experimentId, graph?.version_id);
-      if (res.remediated) {
-        if (onRefreshGraph) onRefreshGraph();
-        if (onVersionChange) onVersionChange(res.version.version_id);
-        setValidationReport(res.report);
-      } else {
-        alert('No auto-remediations required for this graph version.');
-      }
-    } catch (err) {
-      alert('Remediation failed: ' + err.message);
-    } finally {
-      setRemediating(false);
-    }
-  }
-
-  // Tune form state
   const [tuneParams, setTuneParams] = useState({
-    learning_rate: graph?.parameters_summary?.learning_rate || '0.001',
-    batch_size: graph?.parameters_summary?.batch_size || '64',
-    epochs: graph?.parameters_summary?.epochs || '10',
-    seed: graph?.parameters_summary?.seed || '42',
+    learning_rate: String(graph?.parameters_summary?.learning_rate ?? '0.001'),
+    batch_size: String(graph?.parameters_summary?.batch_size ?? '64'),
+    epochs: String(graph?.parameters_summary?.epochs ?? '10'),
+    seed: String(graph?.parameters_summary?.seed ?? '42'),
   });
   const [customNodeCode, setCustomNodeCode] = useState('');
   const [tuneTargetNode, setTuneTargetNode] = useState('');
   const [tuneDesc, setTuneDesc] = useState('');
   const [tuningLoading, setTuningLoading] = useState(false);
-
-  // Diff state
-  const [fromVer, setFromVer] = useState(versions?.[0]?.version_id || 'v1');
-  const [toVer, setToVer] = useState(versions?.[versions.length - 1]?.version_id || 'v1');
+  const [fromVer, setFromVer] = useState(versions?.[0]?.version_id || graph?.version_id || 'v1');
+  const [toVer, setToVer] = useState(versions?.[versions.length - 1]?.version_id || graph?.version_id || 'v1');
   const [diffData, setDiffData] = useState(null);
   const [diffLoading, setDiffLoading] = useState(false);
 
-  if (!graph || !graph.nodes) {
-    return (
-      <div className="card" style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-        No experiment graph generated yet.
-      </div>
-    );
-  }
+  const { nodes: initialFlowNodes, edges: initialEdges } = useMemo(() => buildFlowLayout(rawNodes), [rawNodes, graph?.version_id]);
+  const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(initialFlowNodes);
+  const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState(initialEdges);
 
-  const selectedNode = graph.nodes.find((n) => n.id === selectedNodeId) || graph.nodes[0];
+  useEffect(() => {
+    setFlowNodes(initialFlowNodes);
+    setFlowEdges(initialEdges);
+    setSelectedNodeId((current) => rawNodes.some((node) => String(node.id) === current) ? current : String(rawNodes[0]?.id || ''));
+  }, [initialFlowNodes, initialEdges, rawNodes, setFlowNodes, setFlowEdges]);
 
-  function copyCode() {
-    if (selectedNode?.code) {
-      navigator.clipboard.writeText(selectedNode.code);
-      setCopiedCode(true);
-      setTimeout(() => setCopiedCode(false), 2000);
+  useEffect(() => {
+    setTuneParams({
+      learning_rate: String(graph?.parameters_summary?.learning_rate ?? '0.001'),
+      batch_size: String(graph?.parameters_summary?.batch_size ?? '64'),
+      epochs: String(graph?.parameters_summary?.epochs ?? '10'),
+      seed: String(graph?.parameters_summary?.seed ?? '42'),
+    });
+  }, [graph?.version_id]);
+
+  useEffect(() => {
+    if (experimentId && graph?.version_id) handleValidate(graph.version_id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [experimentId, graph?.version_id]);
+
+  useEffect(() => {
+    if (versions?.length) {
+      setFromVer((current) => versions.some((version) => version.version_id === current) ? current : versions[0].version_id);
+      setToVer((current) => versions.some((version) => version.version_id === current) ? current : versions[versions.length - 1].version_id);
     }
-  }
+  }, [versions]);
 
-  async function handleTuneSubmit(e) {
-    e.preventDefault();
+  const selectedNode = rawNodes.find((node) => String(node.id) === selectedNodeId) || null;
+
+  const handleNodeClick = useCallback((_, flowNode) => {
+    setSelectedNodeId(flowNode.id);
+    setInspectorOpen(true);
+  }, []);
+
+  const handleValidate = async (versionId = null) => {
+    if (!experimentId) return;
+    setValidating(true);
+    try {
+      const report = await api.validateGraph(experimentId, versionId || graph?.version_id);
+      setValidationReport(report);
+    } catch (error) {
+      console.error('Graph validation failed:', error);
+      setValidationReport({ is_valid: false, total_errors: 1, total_warnings: 0, issues: [{ node_id: 'graph', severity: 'error', category: 'request_failed', message: error.message || 'Validation request failed.' }] });
+    } finally {
+      setValidating(false);
+    }
+  };
+
+  const handleRemediate = async () => {
+    if (!experimentId) return;
+    setRemediating(true);
+    try {
+      const result = await api.remediateGraph(experimentId, graph?.version_id);
+      if (result.remediated) {
+        onRefreshGraph?.();
+        if (result.version?.version_id) onVersionChange?.(result.version.version_id);
+        setValidationReport(result.report);
+      } else {
+        window.alert('No auto-remediations required for this graph version.');
+      }
+    } catch (error) {
+      window.alert(`Remediation failed: ${error.message}`);
+    } finally {
+      setRemediating(false);
+    }
+  };
+
+  const copyCode = async (code) => {
+    if (!code) return;
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopiedCode(true);
+      window.setTimeout(() => setCopiedCode(false), 1800);
+    } catch (error) {
+      console.error('Unable to copy node code:', error);
+    }
+  };
+
+  const handleTuneSubmit = async (event) => {
+    event.preventDefault();
     setTuningLoading(true);
     try {
       const payload = {
@@ -116,548 +462,237 @@ export default function GraphTab({
         payload.node_id = tuneTargetNode;
         payload.code_updates = { [tuneTargetNode]: customNodeCode.trim() };
       }
-
       await api.tuneGraph(experimentId, payload);
       setShowTuneModal(false);
-      onRefreshGraph();
-    } catch (err) {
-      alert('Tuning failed: ' + err.message);
+      onRefreshGraph?.();
+    } catch (error) {
+      window.alert(`Tuning failed: ${error.message}`);
     } finally {
       setTuningLoading(false);
     }
-  }
+  };
 
-  async function handleLoadDiff() {
+  const handleLoadDiff = async () => {
+    if (!experimentId || !fromVer || !toVer) return;
     setDiffLoading(true);
+    setDiffData(null);
     try {
       const data = await api.getGraphDiff(experimentId, fromVer, toVer);
       setDiffData(data);
-    } catch (err) {
-      alert('Diff failed: ' + err.message);
+    } catch (error) {
+      window.alert(`Diff failed: ${error.message}`);
     } finally {
       setDiffLoading(false);
     }
+  };
+
+  const onPaneClick = useCallback(() => setSelectedNodeId(''), []);
+
+  if (!graph || !Array.isArray(graph.nodes)) {
+    return (
+      <section className="graph-empty">
+        <span className="graph-empty__icon"><GitFork size={22} /></span>
+        <p className="graph-eyebrow">EXPERIMENT GRAPH / WAITING</p>
+        <h3>No execution graph yet</h3>
+        <p>Generate an experiment graph to inspect node dependencies, synthesized code, provenance, and validation results.</p>
+      </section>
+    );
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-      {/* Top Bar with Version Switcher and Actions */}
-      <div className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', padding: '0.85rem 1.25rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Layers size={18} color="var(--accent-blue)" />
-            <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>Graph Version:</span>
+    <div className="graph-workspace">
+      <header className="graph-page-heading">
+        <div>
+          <p className="graph-eyebrow">EXPERIMENT STRUCTURE / 02</p>
+          <h2>Experiment graph</h2>
+          <p>Explore the full execution pipeline. Select a node to inspect its configuration, code, and provenance.</p>
+        </div>
+        <div className="graph-page-stat"><GitFork size={15} /><strong>{rawNodes.length}</strong><span>nodes · DAG canvas</span></div>
+      </header>
+
+      <section className="graph-toolbar">
+        <div className="graph-version-control">
+          <span className="graph-toolbar__icon"><Layers3 size={17} /></span>
+          <div className="graph-version-control__label">
+            <span>Graph version</span>
+            <select value={graph.version_id || ''} onChange={(event) => onVersionChange?.(event.target.value)} aria-label="Graph version">
+              {(versions || []).map((version) => (
+                <option key={version.version_id} value={version.version_id}>
+                  {version.version_id} {version.parent_version ? `(from ${version.parent_version})` : '(Initial synthesis)'}
+                </option>
+              ))}
+              {!versions?.length && graph.version_id && <option value={graph.version_id}>{graph.version_id}</option>}
+            </select>
           </div>
-          <select 
-            className="select" 
-            value={graph.version_id} 
-            onChange={(e) => onVersionChange(e.target.value)}
-          >
-            {(versions || []).map((v) => (
-              <option key={v.version_id} value={v.version_id}>
-                {v.version_id} {v.parent_version ? `(from ${v.parent_version})` : '(Initial synthesis)'}
-              </option>
-            ))}
-          </select>
-
-          <span style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: 'var(--text-dim)' }}>
-            Hash: {graph.graph_hash || 'computed'}
-          </span>
+          <div className="graph-hash"><Hash size={12} /><span>{graph.graph_hash || 'hash pending'}</span></div>
         </div>
-
-        <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
-          <button 
-            className="btn btn-secondary btn-sm"
-            onClick={() => handleValidate()}
-            disabled={validating}
-            title="Perform static AST analysis and verify sequential symbol flow"
-          >
-            <RefreshCw size={14} className={validating ? 'spin' : ''} />
-            {validating ? 'Validating...' : 'Validate Code'}
+        <div className="graph-toolbar__actions">
+          <button className="graph-button graph-button--quiet" type="button" onClick={() => handleValidate()} disabled={validating}>
+            <RefreshCw size={14} className={validating ? 'graph-spin' : ''} />{validating ? 'Validating…' : 'Validate code'}
           </button>
-          <button 
-            className="btn btn-secondary btn-sm" 
-            onClick={() => {
-              setShowDiffModal(true);
-              handleLoadDiff();
-            }}
-          >
-            <History size={14} /> Diff
-          </button>
-          <button 
-            className="btn btn-primary btn-sm" 
-            onClick={() => setShowTuneModal(true)}
-          >
-            <Sliders size={14} /> Tune Parameters
-          </button>
+          <button className="graph-button graph-button--quiet" type="button" onClick={() => { setShowDiffModal(true); setDiffData(null); }}><History size={14} />Compare versions</button>
+          <button className="graph-button graph-button--primary" type="button" onClick={() => setShowTuneModal(true)}><SlidersHorizontal size={14} />Tune parameters</button>
         </div>
-      </div>
+      </section>
 
-      {/* Sequential Code Validation Banner */}
       {validationReport && (
-        <div 
-          className="card" 
-          style={{ 
-            borderColor: validationReport.is_valid ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.5)',
-            background: validationReport.is_valid ? 'rgba(16, 185, 129, 0.05)' : 'rgba(239, 68, 68, 0.06)',
-            padding: '1rem 1.25rem',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '0.75rem',
-          }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-              {validationReport.is_valid ? (
-                <ShieldCheck size={20} color="var(--accent-green)" />
-              ) : (
-                <AlertTriangle size={20} color="var(--accent-red)" />
-              )}
-              <span style={{ fontWeight: 600, fontSize: '0.92rem' }}>
-                {validationReport.is_valid 
-                  ? 'Sequential Code Validation: Verified' 
-                  : `Code Flow Validation: ${validationReport.total_errors} Error(s), ${validationReport.total_warnings} Warning(s)`}
-              </span>
-              <span className={`badge ${validationReport.is_valid ? 'badge-green' : 'badge-red'}`} style={{ fontSize: '0.72rem' }}>
-                {validationReport.is_valid ? 'PASSED' : 'ACTION REQUIRED'}
-              </span>
+        <section className={`graph-validation ${validationReport.is_valid ? 'graph-validation--valid' : 'graph-validation--invalid'}`}>
+          <div className="graph-validation__top">
+            <div className="graph-validation__status">
+              <span className="graph-validation__icon">{validationReport.is_valid ? <ShieldCheck size={19} /> : <AlertTriangle size={19} />}</span>
+              <div><p className="graph-eyebrow">STATIC ANALYSIS / SEQUENTIAL SYMBOL FLOW</p><h3>{validationReport.is_valid ? 'Code flow verified' : 'Validation needs attention'}</h3></div>
+              <span className={`graph-status-pill ${validationReport.is_valid ? 'graph-status-pill--success' : 'graph-status-pill--danger'}`}>{validationReport.is_valid ? 'PASSED' : 'ACTION REQUIRED'}</span>
             </div>
+            <div className="graph-validation__actions">
+              {!validationReport.is_valid && validationReport.can_auto_remediate && <button className="graph-button graph-button--warning" type="button" onClick={handleRemediate} disabled={remediating}><Wrench size={14} />{remediating ? 'Applying fixes…' : 'Auto-remediate'}</button>}
+              <button className="graph-button graph-button--quiet" type="button" onClick={() => setShowIssuesList((current) => !current)}>{showIssuesList ? 'Hide details' : 'Show details'}</button>
+            </div>
+          </div>
+          {!validationReport.is_valid && <div className="graph-validation__counts"><span><XCircle size={13} />{validationReport.total_errors ?? 0} errors</span><span><AlertTriangle size={13} />{validationReport.total_warnings ?? 0} warnings</span></div>}
+          {!validationReport.is_valid && showIssuesList && validationReport.issues?.length > 0 && (
+            <div className="graph-issues">
+              <p className="graph-issues__intro">Potential sequential runtime failures reported by the validator.</p>
+              {validationReport.issues.map((issue, index) => (
+                <article className={`graph-issue graph-issue--${issue.severity === 'error' ? 'error' : 'warning'}`} key={`${issue.node_id}-${issue.line_number}-${index}`}>
+                  <div className="graph-issue__top">
+                    <div className="graph-issue__location"><span>NODE</span><code>{issue.node_id}</code>{issue.line_number && <span className="graph-issue__line">LINE {issue.line_number}</span>}</div>
+                    <div className="graph-issue__tags"><span className={`graph-mini-tag graph-mini-tag--${issue.severity === 'error' ? 'danger' : 'warning'}`}>{issue.category}</span>{issue.symbol && <span className="graph-mini-tag graph-mini-tag--symbol">{issue.symbol}</span>}</div>
+                  </div>
+                  <p>{issue.message}</p>
+                  {issue.suggested_fix && <div className="graph-issue__fix"><strong>Suggested fix</strong><code>{issue.suggested_fix}</code></div>}
+                </article>
+              ))}
+            </div>
+          )}
+          {validationReport.is_valid && <p className="graph-validation__success-copy"><CheckCircle2 size={14} />No sequential code-flow issues were reported for this graph version.</p>}
+        </section>
+      )}
 
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              {!validationReport.is_valid && validationReport.can_auto_remediate && (
-                <button
-                  className="btn btn-primary btn-sm"
-                  onClick={handleRemediate}
-                  disabled={remediating}
-                  style={{ background: 'var(--accent-amber)', color: '#000', fontWeight: 600 }}
-                >
-                  <Wrench size={14} />
-                  {remediating ? 'Auto-Remediating...' : 'Auto-Remediate / Fix Code'}
-                </button>
-              )}
-              <button 
-                className="btn btn-secondary btn-sm" 
-                onClick={() => setShowIssuesList(!showIssuesList)}
-                style={{ fontSize: '0.75rem' }}
-              >
-                {showIssuesList ? 'Hide Details' : 'Show Details'}
+      <section className={`cg-graph-shell ${inspectorOpen ? '' : 'cg-graph-shell--inspector-closed'}`}>
+        <div className="cg-canvas-panel">
+          <div className="cg-canvas-topbar">
+            <div className="cg-canvas-heading">
+              <span className="graph-panel__icon graph-panel__icon--cyan"><GitFork size={16} /></span>
+              <div><p className="graph-eyebrow">PIPELINE / DIRECTED ACYCLIC GRAPH</p><h3>Execution canvas</h3></div>
+            </div>
+            <div className="cg-canvas-actions">
+              <span className="cg-canvas-hint">Drag to pan · Scroll to zoom · Click a node to inspect</span>
+              <button className="graph-icon-button" type="button" onClick={() => setInspectorOpen((open) => !open)} aria-label={inspectorOpen ? 'Hide node inspector' : 'Show node inspector'} title={inspectorOpen ? 'Hide node inspector' : 'Show node inspector'}>
+                {inspectorOpen ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
               </button>
             </div>
           </div>
-
-          {!validationReport.is_valid && showIssuesList && validationReport.issues?.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.25rem' }}>
-              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                The following variables or constructs would cause runtime crashes if executed sequentially:
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', maxHeight: '220px', overflowY: 'auto' }}>
-                {validationReport.issues.map((issue, idx) => (
-                  <div 
-                    key={idx}
-                    style={{
-                      background: 'rgba(0, 0, 0, 0.3)',
-                      padding: '0.6rem 0.8rem',
-                      borderRadius: '6px',
-                      borderLeft: `3px solid ${issue.severity === 'error' ? 'var(--accent-red)' : 'var(--accent-amber)'}`,
-                      fontSize: '0.8rem',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '0.25rem',
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
-                      <span style={{ fontWeight: 600, color: '#fff' }}>
-                        Node: <code style={{ color: 'var(--accent-cyan)' }}>{issue.node_id}</code>
-                        {issue.line_number && <span style={{ color: 'var(--text-dim)', marginLeft: '0.5rem' }}>Line {issue.line_number}</span>}
-                      </span>
-                      <div style={{ display: 'flex', gap: '0.4rem' }}>
-                        <span className={`badge ${issue.severity === 'error' ? 'badge-red' : 'badge-amber'}`} style={{ fontSize: '0.68rem' }}>
-                          {issue.category}
-                        </span>
-                        {issue.symbol && (
-                          <span className="badge badge-blue" style={{ fontSize: '0.68rem', fontFamily: 'var(--font-mono)' }}>
-                            symbol: {issue.symbol}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <div style={{ color: 'var(--text-main)' }}>{issue.message}</div>
-                    {issue.suggested_fix && (
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                        <span style={{ color: 'var(--accent-green)' }}>Suggested Fix:</span>
-                        <code style={{ background: 'rgba(255,255,255,0.06)', padding: '2px 6px', borderRadius: '4px' }}>
-                          {issue.suggested_fix}
-                        </code>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Main DAG Grid Layout */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.8fr', gap: '1.25rem' }}>
-        {/* DAG Pipeline Flow */}
-        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
-            <h4 style={{ fontSize: '0.95rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <GitFork size={16} color="var(--accent-cyan)" /> Experiment Execution DAG
-            </h4>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>{graph.nodes.length} isolated nodes</span>
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-            {graph.nodes.map((node, index) => {
-              const isSelected = node.id === selectedNodeId;
-              const provSource = node.provenance?.source || 'deterministic_synthesis';
-
-              return (
-                <div 
-                  key={node.id}
-                  onClick={() => setSelectedNodeId(node.id)}
-                  style={{
-                    background: isSelected ? 'rgba(59, 130, 246, 0.12)' : 'rgba(255, 255, 255, 0.03)',
-                    border: isSelected ? '1px solid var(--accent-blue)' : '1px solid var(--border)',
-                    borderRadius: '0.5rem',
-                    padding: '0.75rem 1rem',
-                    cursor: 'pointer',
-                    transition: 'all 0.15s ease',
+          <div className="cg-flow-canvas">
+            {rawNodes.length ? (
+              <ReactFlow
+                nodes={flowNodes.map((node) => ({ ...node, selected: node.id === selectedNodeId }))}
+                edges={flowEdges}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                onNodeClick={handleNodeClick}
+                onPaneClick={onPaneClick}
+                nodeTypes={nodeTypes}
+                fitView
+                fitViewOptions={{ padding: 0.2, minZoom: 0.25, maxZoom: 1 }}
+                minZoom={0.15}
+                maxZoom={1.6}
+                nodesDraggable
+                nodesConnectable={false}
+                elementsSelectable
+                proOptions={{ hideAttribution: true }}
+                defaultEdgeOptions={{ type: 'smoothstep' }}
+              >
+                <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#293638" />
+                <Controls showInteractive={false} />
+                <MiniMap
+                  pannable
+                  zoomable
+                  nodeColor={(node) => {
+                    const tone = node.data?.node ? provenanceFor(node.data.node).tone : 'synthesized';
+                    return ({ repository: '#B6A0FF', assumed: '#FFB86B', tuned: '#65DFF2', synthesized: '#61E6A6' })[tone] || '#61E6A6';
                   }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <span style={{
-                        width: '1.4rem',
-                        height: '1.4rem',
-                        borderRadius: '9999px',
-                        background: 'rgba(255, 255, 255, 0.08)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        fontSize: '0.7rem',
-                        fontWeight: 700,
-                        color: 'var(--text-muted)',
-                      }}>
-                        {index + 1}
-                      </span>
-                      <strong style={{ fontSize: '0.875rem', color: isSelected ? '#93c5fd' : '#f1f5f9' }}>
-                        {node.name}
-                      </strong>
-                    </div>
-
-                    <span className={`badge ${
-                      provSource === 'tuned' ? 'badge-purple' :
-                      provSource === 'repository' ? 'badge-blue' :
-                      provSource === 'assumed' ? 'badge-amber' : 'badge-green'
-                    }`}>
-                      {provSource}
-                    </span>
-                  </div>
-
-                  <p style={{ fontSize: '0.775rem', color: 'var(--text-muted)', marginBottom: '0.5rem', lineHeight: 1.4 }}>
-                    {node.description}
-                  </p>
-
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.725rem', color: 'var(--text-dim)' }}>
-                    <span>Type: <code style={{ color: 'var(--accent-cyan)' }}>{node.type}</code></span>
-                    {node.upstream.length > 0 && (
-                      <span>Depends on: {node.upstream.length} upstream</span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+                  maskColor="rgba(7, 11, 12, 0.78)"
+                />
+                <Panel position="top-right" className="cg-canvas-count">
+                  <span className="cg-canvas-count__dot" />{rawNodes.length} NODES <span>/</span> {flowEdges.length} EDGES
+                </Panel>
+              </ReactFlow>
+            ) : (
+              <div className="cg-canvas-empty"><GitFork size={25} /><strong>This graph has no nodes</strong><span>The selected graph version did not return any pipeline nodes.</span></div>
+            )}
           </div>
+          <footer className="cg-canvas-legend">
+            <span><i className="cg-legend-swatch cg-legend-swatch--repository" />Repository</span>
+            <span><i className="cg-legend-swatch cg-legend-swatch--assumed" />Assumed</span>
+            <span><i className="cg-legend-swatch cg-legend-swatch--tuned" />Tuned</span>
+            <span><i className="cg-legend-swatch cg-legend-swatch--synthesized" />Synthesized</span>
+            <span className="cg-legend-spacer" />
+            <span className="cg-legend-note"><Clock3 size={12} /> Graph version: {graph.version_id || '—'}</span>
+          </footer>
         </div>
 
-        {/* Selected Node Details & Code Block */}
-        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                <h3 style={{ fontSize: '1.05rem', fontWeight: 600 }}>{selectedNode.name}</h3>
-                <span className="badge badge-blue">{selectedNode.type}</span>
-              </div>
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
-                ID: <code style={{ fontFamily: 'var(--font-mono)' }}>{selectedNode.id}</code>
-              </p>
-            </div>
+        {inspectorOpen && (
+          <Inspector
+            node={selectedNode}
+            onClose={() => setInspectorOpen(false)}
+            onCopyCode={copyCode}
+            copiedCode={copiedCode}
+          />
+        )}
+      </section>
 
-            <button className="btn btn-secondary btn-sm" onClick={copyCode}>
-              {copiedCode ? <Check size={14} color="#34d399" /> : <Copy size={14} />}
-              <span>{copiedCode ? 'Copied' : 'Copy Code'}</span>
-            </button>
-          </div>
-
-          {/* Node Parameters */}
-          {selectedNode.parameters && Object.keys(selectedNode.parameters).length > 0 && (
-            <div style={{
-              background: 'rgba(0, 0, 0, 0.25)',
-              border: '1px solid var(--border)',
-              borderRadius: '0.5rem',
-              padding: '0.75rem',
-            }}>
-              <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-dim)', marginBottom: '0.4rem', textTransform: 'uppercase' }}>
-                Node Bound Parameters
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                {Object.entries(selectedNode.parameters).map(([pk, pv]) => (
-                  <div key={pk} style={{
-                    background: 'rgba(255, 255, 255, 0.05)',
-                    padding: '0.25rem 0.5rem',
-                    borderRadius: '0.25rem',
-                    fontSize: '0.75rem',
-                    fontFamily: 'var(--font-mono)',
-                  }}>
-                    <span style={{ color: 'var(--text-muted)' }}>{pk}:</span>{' '}
-                    <span style={{ color: 'var(--accent-cyan)' }}>{String(pv)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Executable Python Code */}
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
-              <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-dim)', textTransform: 'uppercase' }}>
-                Isolated Container Code Block
-              </span>
-              <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
-                Config Hash: {selectedNode.config_hash || 'auto'}
-              </span>
-            </div>
-            <pre className="code-block" style={{ maxHeight: '380px', flex: 1 }}>
-              {selectedNode.code}
-            </pre>
-          </div>
-        </div>
-      </div>
-
-      {/* Parameter Fine-Tuning Modal */}
       {showTuneModal && (
-        <div className="modal-overlay">
-          <div className="modal-content">
-            <div className="modal-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <Sliders size={18} color="var(--accent-blue)" />
-                <h3 style={{ fontSize: '1.05rem', fontWeight: 600 }}>Fine-Tune Parameters & Version Graph</h3>
-              </div>
-              <button className="btn btn-secondary btn-sm" onClick={() => setShowTuneModal(false)}>✕</button>
+        <Modal
+          title="Tune parameters"
+          eyebrow="CREATE GRAPH VERSION"
+          icon={SlidersHorizontal}
+          onClose={() => setShowTuneModal(false)}
+          className="graph-tune-modal"
+          footer={<><button className="graph-button graph-button--quiet" type="button" onClick={() => setShowTuneModal(false)}>Cancel</button><button className="graph-button graph-button--primary" type="submit" form="graph-tune-form" disabled={tuningLoading}>{tuningLoading ? 'Creating version…' : 'Create immutable version'}</button></>}
+        >
+          <p className="graph-modal__description">Changing hyperparameters or node code creates a new immutable graph version with provenance and diff tracking.</p>
+          <form id="graph-tune-form" onSubmit={handleTuneSubmit} className="graph-form">
+            <div className="graph-form__grid">
+              {[['learning_rate', 'Learning rate'], ['batch_size', 'Batch size'], ['epochs', 'Training epochs'], ['seed', 'Base seed']].map(([key, label]) => (
+                <label className="graph-field" key={key}><span>{label}</span><input value={tuneParams[key]} onChange={(event) => setTuneParams((current) => ({ ...current, [key]: event.target.value }))} /></label>
+              ))}
             </div>
-
-            <form onSubmit={handleTuneSubmit}>
-              <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  Modifying hyperparameters or code generates an <strong>immutable new graph version</strong> with full provenance and diff tracking.
-                </p>
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.3rem' }}>
-                      Learning Rate
-                    </label>
-                    <input
-                      type="text"
-                      className="input"
-                      style={{ width: '100%' }}
-                      value={tuneParams.learning_rate}
-                      onChange={(e) => setTuneParams({ ...tuneParams, learning_rate: e.target.value })}
-                    />
-                  </div>
-
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.3rem' }}>
-                      Batch Size
-                    </label>
-                    <input
-                      type="text"
-                      className="input"
-                      style={{ width: '100%' }}
-                      value={tuneParams.batch_size}
-                      onChange={(e) => setTuneParams({ ...tuneParams, batch_size: e.target.value })}
-                    />
-                  </div>
-
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.3rem' }}>
-                      Training Epochs
-                    </label>
-                    <input
-                      type="text"
-                      className="input"
-                      style={{ width: '100%' }}
-                      value={tuneParams.epochs}
-                      onChange={(e) => setTuneParams({ ...tuneParams, epochs: e.target.value })}
-                    />
-                  </div>
-
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.3rem' }}>
-                      Base Seed
-                    </label>
-                    <input
-                      type="text"
-                      className="input"
-                      style={{ width: '100%' }}
-                      value={tuneParams.seed}
-                      onChange={(e) => setTuneParams({ ...tuneParams, seed: e.target.value })}
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.3rem' }}>
-                    Target Specific Node for Custom Code (Optional)
-                  </label>
-                  <select 
-                    className="select" 
-                    style={{ width: '100%' }}
-                    value={tuneTargetNode}
-                    onChange={(e) => setTuneTargetNode(e.target.value)}
-                  >
-                    <option value="">No node custom code</option>
-                    {graph.nodes.map((n) => (
-                      <option key={n.id} value={n.id}>{n.name} ({n.id})</option>
-                    ))}
-                  </select>
-                </div>
-
-                {tuneTargetNode && (
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.3rem' }}>
-                      Custom Replacement Code for {tuneTargetNode}
-                    </label>
-                    <textarea
-                      rows={5}
-                      className="input"
-                      style={{ width: '100%', fontFamily: 'var(--font-mono)', fontSize: '0.78rem' }}
-                      value={customNodeCode}
-                      onChange={(e) => setCustomNodeCode(e.target.value)}
-                      placeholder="# Custom code to execute in this node container..."
-                    />
-                  </div>
-                )}
-
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.3rem' }}>
-                    Change Description / Reason
-                  </label>
-                  <input
-                    type="text"
-                    className="input"
-                    style={{ width: '100%' }}
-                    placeholder="e.g. Doubled batch size and lowered learning rate for stability"
-                    value={tuneDesc}
-                    onChange={(e) => setTuneDesc(e.target.value)}
-                  />
-                </div>
-              </div>
-
-              <div className="modal-footer">
-                <button type="button" className="btn btn-secondary" onClick={() => setShowTuneModal(false)}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn btn-primary" disabled={tuningLoading}>
-                  {tuningLoading ? 'Creating Version...' : 'Create New Immutable Version'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+            <label className="graph-field"><span>Target node <em>OPTIONAL</em></span><select value={tuneTargetNode} onChange={(event) => setTuneTargetNode(event.target.value)}><option value="">No node-specific code</option>{rawNodes.map((node) => <option key={node.id} value={node.id}>{node.name || node.id} ({node.id})</option>)}</select></label>
+            {tuneTargetNode && <label className="graph-field"><span>Replacement code for {tuneTargetNode}</span><textarea rows={7} value={customNodeCode} onChange={(event) => setCustomNodeCode(event.target.value)} placeholder="# Custom code to execute in this node container…" /></label>}
+            <label className="graph-field"><span>Change description</span><input value={tuneDesc} onChange={(event) => setTuneDesc(event.target.value)} placeholder="e.g. Lowered learning rate for stability" /></label>
+          </form>
+        </Modal>
       )}
 
-      {/* Graph Diff Modal */}
       {showDiffModal && (
-        <div className="modal-overlay">
-          <div className="modal-content" style={{ maxWidth: '850px' }}>
-            <div className="modal-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <History size={18} color="var(--accent-indigo)" />
-                <h3 style={{ fontSize: '1.05rem', fontWeight: 600 }}>Graph Version Diff</h3>
-              </div>
-              <button className="btn btn-secondary btn-sm" onClick={() => setShowDiffModal(false)}>✕</button>
-            </div>
-
-            <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-                <div>
-                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>From Version: </span>
-                  <select className="select" value={fromVer} onChange={(e) => setFromVer(e.target.value)}>
-                    {(versions || []).map((v) => (
-                      <option key={v.version_id} value={v.version_id}>{v.version_id}</option>
-                    ))}
-                  </select>
-                </div>
-                <ArrowRight size={16} color="var(--text-dim)" />
-                <div>
-                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>To Version: </span>
-                  <select className="select" value={toVer} onChange={(e) => setToVer(e.target.value)}>
-                    {(versions || []).map((v) => (
-                      <option key={v.version_id} value={v.version_id}>{v.version_id}</option>
-                    ))}
-                  </select>
-                </div>
-                <button className="btn btn-secondary btn-sm" onClick={handleLoadDiff} disabled={diffLoading}>
-                  {diffLoading ? 'Comparing...' : 'Compare'}
-                </button>
-              </div>
-
-              {diffData && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                  {/* Parameter Changes */}
-                  <div className="card" style={{ padding: '0.85rem' }}>
-                    <h5 style={{ fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.5rem' }}>Parameter Modifications</h5>
-                    {Object.keys(diffData.parameter_changes || {}).length > 0 ? (
-                      <table style={{ width: '100%', fontSize: '0.8rem', borderCollapse: 'collapse' }}>
-                        <thead>
-                          <tr style={{ color: 'var(--text-muted)', borderBottom: '1px solid var(--border)' }}>
-                            <th style={{ padding: '0.4rem' }}>Parameter</th>
-                            <th style={{ padding: '0.4rem' }}>{diffData.from_version} (Old)</th>
-                            <th style={{ padding: '0.4rem' }}>{diffData.to_version} (New)</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {Object.entries(diffData.parameter_changes).map(([k, ch]) => (
-                            <tr key={k} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.04)' }}>
-                              <td style={{ padding: '0.4rem', fontWeight: 600 }}>{k}</td>
-                              <td style={{ padding: '0.4rem', color: '#f87171', fontFamily: 'var(--font-mono)' }}>{String(ch.old)}</td>
-                              <td style={{ padding: '0.4rem', color: '#34d399', fontFamily: 'var(--font-mono)' }}>{String(ch.new)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    ) : (
-                      <span style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>No parameter differences.</span>
-                    )}
-                  </div>
-
-                  {/* Code Diffs */}
-                  {Object.keys(diffData.code_changes || {}).length > 0 && (
-                    <div className="card" style={{ padding: '0.85rem' }}>
-                      <h5 style={{ fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.5rem' }}>Code Modifications</h5>
-                      {Object.entries(diffData.code_changes).map(([nodeId, diffObj]) => (
-                        <div key={nodeId} style={{ marginBottom: '0.75rem' }}>
-                          <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--accent-blue)' }}>Node: {nodeId}</span>
-                          <pre className="code-block" style={{ maxHeight: '200px', fontSize: '0.75rem' }}>
-                            {diffObj.unified_diff || 'No code changes'}
-                          </pre>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            <div className="modal-footer">
-              <button className="btn btn-secondary" onClick={() => setShowDiffModal(false)}>Close</button>
-            </div>
+        <Modal
+          title="Graph version diff"
+          eyebrow="PROVENANCE / COMPARISON"
+          icon={History}
+          onClose={() => setShowDiffModal(false)}
+          className="graph-diff-modal"
+          footer={<button className="graph-button graph-button--quiet" type="button" onClick={() => setShowDiffModal(false)}>Close</button>}
+        >
+          <div className="graph-diff-controls">
+            <label className="graph-field"><span>From version</span><select value={fromVer} onChange={(event) => setFromVer(event.target.value)}>{(versions || []).map((version) => <option key={version.version_id} value={version.version_id}>{version.version_id}</option>)}</select></label>
+            <ArrowRight size={16} className="graph-diff-arrow" />
+            <label className="graph-field"><span>To version</span><select value={toVer} onChange={(event) => setToVer(event.target.value)}>{(versions || []).map((version) => <option key={version.version_id} value={version.version_id}>{version.version_id}</option>)}</select></label>
+            <button className="graph-button graph-button--primary" type="button" onClick={handleLoadDiff} disabled={diffLoading}>{diffLoading ? 'Comparing…' : 'Compare'}</button>
           </div>
-        </div>
+          {diffLoading && <div className="graph-diff-state"><RefreshCw size={16} className="graph-spin" />Loading version differences…</div>}
+          {!diffLoading && !diffData && <div className="graph-diff-state"><History size={18} /><span>Choose two versions and run a comparison to inspect parameter and code changes.</span></div>}
+          {diffData && (
+            <div className="graph-diff-results">
+              <section className="graph-diff-section">
+                <div className="graph-diff-section__heading"><h4>Parameter modifications</h4><span>{Object.keys(diffData.parameter_changes || {}).length} CHANGES</span></div>
+                {Object.keys(diffData.parameter_changes || {}).length ? (
+                  <div className="graph-diff-table-wrap"><table className="graph-diff-table"><thead><tr><th>Parameter</th><th>{diffData.from_version || fromVer} · OLD</th><th>{diffData.to_version || toVer} · NEW</th></tr></thead><tbody>{Object.entries(diffData.parameter_changes).map(([key, change]) => <tr key={key}><td>{key}</td><td className="graph-diff-old">{String(change.old)}</td><td className="graph-diff-new">{String(change.new)}</td></tr>)}</tbody></table></div>
+                ) : <p className="graph-diff-empty">No parameter differences detected.</p>}
+              </section>
+              {Object.keys(diffData.code_changes || {}).length > 0 && <section className="graph-diff-section"><div className="graph-diff-section__heading"><h4>Code modifications</h4><span>{Object.keys(diffData.code_changes).length} NODES</span></div>{Object.entries(diffData.code_changes).map(([nodeId, change]) => <div className="graph-diff-code" key={nodeId}><p><FileCode2 size={13} />{nodeId}</p><pre>{change.unified_diff || 'No code changes'}</pre></div>)}</section>}
+            </div>
+          )}
+        </Modal>
       )}
     </div>
   );
