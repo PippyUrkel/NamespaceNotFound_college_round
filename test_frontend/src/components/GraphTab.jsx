@@ -448,13 +448,15 @@ export default function GraphTab({ experimentId, graph, versions, onVersionChang
   const handleTuneSubmit = async (event) => {
     event.preventDefault();
     setTuningLoading(true);
+    // Fall back to the raw value only when parsing fails; `||` would also discard a legitimate 0
+    const orRaw = (parsed, raw) => (Number.isNaN(parsed) ? raw : parsed);
     try {
       const payload = {
         parameters: {
-          learning_rate: parseFloat(tuneParams.learning_rate) || tuneParams.learning_rate,
-          batch_size: parseInt(tuneParams.batch_size, 10) || tuneParams.batch_size,
-          epochs: parseInt(tuneParams.epochs, 10) || tuneParams.epochs,
-          seed: parseInt(tuneParams.seed, 10) || tuneParams.seed,
+          learning_rate: orRaw(parseFloat(tuneParams.learning_rate), tuneParams.learning_rate),
+          batch_size: orRaw(parseInt(tuneParams.batch_size, 10), tuneParams.batch_size),
+          epochs: orRaw(parseInt(tuneParams.epochs, 10), tuneParams.epochs),
+          seed: orRaw(parseInt(tuneParams.seed, 10), tuneParams.seed),
         },
         change_description: tuneDesc || 'Parameter fine-tuning from studio',
       };
