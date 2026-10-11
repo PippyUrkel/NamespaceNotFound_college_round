@@ -28,6 +28,20 @@ except ModuleNotFoundError:  # pragma: no cover
     from app.graph.models import DAGNode, GraphVersion
 
 
+# Rough seconds per training epoch for a small CNN on the 2 CPU cores a container gets.
+# Order-of-magnitude only: enough to tell a 2-minute run from a 3-hour one.
+_CPU_SECONDS_PER_EPOCH = {
+    "mnist": 45,
+    "fashion": 45,
+    "kmnist": 45,
+    "cifar": 150,
+    "svhn": 180,
+    "stl": 300,
+    "imagenet": 36000,
+}
+_DEFAULT_CPU_SECONDS_PER_EPOCH = 90
+
+
 class FeasibilityChecker:
     """Assess whether the host can run a given experiment graph."""
 
@@ -40,6 +54,8 @@ class FeasibilityChecker:
         graph: GraphVersion,
         docker_image: str = "python:3.11-slim",
         pip_packages: list[str] | None = None,
+        default_timeout_seconds: int = 600,
+        node_timeouts: dict[str, int] | None = None,
     ) -> FeasibilityReport:
         resources = cls._assess_resources()
         requirements = cls._estimate_requirements(graph)
@@ -73,13 +89,32 @@ class FeasibilityChecker:
                 f"available space ({resources.disk_mb} MB)."
             )
 
-        # GPU check — informational, not blocking
+        # GPU check — informational, not blocking. Containers are started without --gpus,
+        # so a GPU on the host is never visible to experiment code.
         gpu_required = any(r.requires_gpu for r in requirements)
-        if gpu_required and not resources.gpu_available:
+        if gpu_required:
+            host_gpu = f"The host GPU ({resources.gpu_name}) is not passed through. " if resources.gpu_available else ""
             warnings.append(
-                "One or more nodes require GPU but no GPU was detected. "
-                "Execution will proceed on CPU, which may affect runtime and "
+                "One or more nodes use a GPU when available, but experiment containers run CPU-only. "
+                f"{host_gpu}Training will run on CPU, which affects runtime and may affect "
                 "numerical results. This is reported, not silently hidden."
+            )
+
+        # Timeout check — a node estimated past its timeout will be killed and retried for nothing
+        training = next((r for r in requirements if r.node_id == "training_pipeline"), None)
+        epochs, per_epoch, dataset = cls._training_budget(graph)
+        for req in requirements:
+            timeout = (node_timeouts or {}).get(req.node_id, default_timeout_seconds)
+            if req.estimated_runtime_seconds <= timeout:
+                continue
+            reruns_training = training is not None and req.node_id != "training_pipeline" and req.estimated_runtime_seconds >= training.estimated_runtime_seconds
+            warnings.append(
+                f"Node '{req.node_id}' is estimated at ~{req.estimated_runtime_seconds // 60} min but its timeout is "
+                f"{timeout // 60} min, so it will likely time out. Estimate: {epochs} epochs x ~{per_epoch}s/epoch "
+                f"on CPU for {dataset or 'an unknown dataset'}"
+                + (" (this node re-runs training as part of its upstream code)" if reruns_training else "")
+                + ". Reduce epochs in the Graph tab (recorded as 'tuned', not silently changed) "
+                "or raise default_timeout_seconds when submitting."
             )
 
         # Dependency issues
@@ -220,25 +255,52 @@ class FeasibilityChecker:
     # Estimate node requirements
     # ------------------------------------------------------------------
     @classmethod
+    def _training_budget(cls, graph: GraphVersion) -> tuple[int, int, str | None]:
+        """Return (epochs, CPU seconds per epoch, dataset name) from the graph's node parameters."""
+        epochs = 10
+        dataset: str | None = None
+        for node in graph.nodes:
+            if node.parameters.get("epochs") is not None:
+                try:
+                    epochs = int(node.parameters["epochs"])
+                except (TypeError, ValueError):
+                    pass
+            if node.parameters.get("dataset"):
+                dataset = str(node.parameters["dataset"])
+        key = (dataset or "").lower().replace("-", "").replace("_", "")
+        per_epoch = next(
+            (secs for name, secs in _CPU_SECONDS_PER_EPOCH.items() if name in key),
+            _DEFAULT_CPU_SECONDS_PER_EPOCH,
+        )
+        return epochs, per_epoch, dataset
+
+    @classmethod
     def _estimate_requirements(cls, graph: GraphVersion) -> list[ResourceRequirement]:
+        epochs, per_epoch, _ = cls._training_budget(graph)
+        own_runtime: dict[str, int] = {}
         reqs: list[ResourceRequirement] = []
         for node in graph.nodes:
             requires_gpu = cls._node_needs_gpu(node)
             # Rough heuristics per node type
+            # (each node also pays ~15-20s of pip install; datasets come from the shared cache)
             ram = 512
             disk = 128
-            runtime = 300
+            runtime = 30
             ntype = node.type.lower()
-            if "train" in ntype or "model" in ntype:
+            if "train" in ntype:
                 ram = 2048
-                runtime = 900
+                runtime = 60 + epochs * per_epoch
+            elif "model" in ntype:
+                ram = 2048
+                runtime = 30
             elif "data" in ntype or "preprocess" in ntype:
                 ram = 1024
                 disk = 512
-                runtime = 180
+                runtime = 60
             elif "eval" in ntype or "metric" in ntype:
                 ram = 1024
-                runtime = 120
+                runtime = 60
+            own_runtime[node.id] = runtime
 
             reqs.append(
                 ResourceRequirement(
@@ -249,6 +311,20 @@ class FeasibilityChecker:
                     estimated_runtime_seconds=runtime,
                 )
             )
+
+        # The executor prepends every ancestor's code to a node, so a node's container
+        # also pays for re-running its whole upstream chain (including training).
+        upstream = {node.id: list(node.upstream) for node in graph.nodes}
+        for req in reqs:
+            seen: set[str] = set()
+            stack = list(upstream.get(req.node_id, []))
+            while stack:
+                anc = stack.pop()
+                if anc in seen:
+                    continue
+                seen.add(anc)
+                stack.extend(upstream.get(anc, []))
+            req.estimated_runtime_seconds += sum(own_runtime.get(anc, 0) for anc in seen)
         return reqs
 
     @staticmethod

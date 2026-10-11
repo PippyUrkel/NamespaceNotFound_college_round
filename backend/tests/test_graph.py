@@ -324,3 +324,70 @@ def test_groq_llm_code_synthesis_path(monkeypatch) -> None:
     assert setup_node.provenance.source in {"paper", "paper_llm_generated", "reconciled"}
     assert "torch.manual_seed(seed)" in setup_node.code
 
+
+
+def test_dataset_resolver_ignores_ordinary_words_next_to_dataset() -> None:
+    from backend.app.graph.parameters import ExperimentConditionResolver
+
+    paper_text = (
+        "We chose these numbers in order to situate the dataset along the transition from linear to nonlinear. "
+        "Real-world pendulum data was noisier than the synthetic ones, so we used a Hilbert-space argument."
+    )
+    repo = {"readme": "This repo contains the dataset of pendulum trajectories.", "files": {}}
+    conditions = ExperimentConditionResolver.resolve_conditions(
+        spec={}, paper_analysis={"full_text": paper_text}, repo_analysis=repo
+    )
+
+    assert conditions.dataset.value not in {"along", "of"}
+    assert conditions.dataset.is_assumed is True
+    assert conditions.architecture.value != "BERT"
+
+
+def test_dataset_resolver_keeps_real_dataset_names() -> None:
+    from backend.app.injestor.extractor import find_dataset_name
+
+    assert find_dataset_name("We train on the ImageNet dataset.")[0] == "ImageNet"
+    assert find_dataset_name("Method: Dataset CIFAR-10. Adam optimizer.")[0] == "CIFAR-10"
+    assert find_dataset_name("dataset: mnist\nepochs: 5")[0] == "mnist"
+    assert find_dataset_name("the dataset along the system's transition") is None
+
+
+def test_groq_code_with_placeholder_stubs_falls_back_to_deterministic(monkeypatch) -> None:
+    stub_data = (
+        "from torch.utils.data import Dataset, DataLoader\n"
+        "class AlongDataset(Dataset):\n"
+        "    def __init__(self, split):\n"
+        "        # TODO: load data for the given split\n"
+        "        pass\n"
+        "    def __len__(self):\n"
+        "        return 0\n"
+        "train_loader = DataLoader(AlongDataset('train'), batch_size=64, shuffle=True)\n"
+    )
+
+    class MockChoice:
+        message = type("Msg", (), {
+            "content": json.dumps({
+                "setup_environment": "import torch\ntorch.manual_seed(0)",
+                "data_pipeline": stub_data,
+                "model_initialization": "model = None",
+                "training_pipeline": "pass",
+                "evaluation_pipeline": "eval_results = {}",
+                "claim_verification": "pass",
+            })
+        })()
+
+    class MockGroq:
+        def __init__(self, api_key):
+            completions = type("C", (), {"create": lambda self, **kw: type("R", (), {"choices": [MockChoice()]})()})()
+            self.chat = type("Chat", (), {"completions": completions})()
+
+    monkeypatch.setattr(settings, "groq_api_key", "mock_key")
+    import sys
+    mock_module = type(sys)("groq")
+    mock_module.Groq = MockGroq
+    monkeypatch.setitem(sys.modules, "groq", mock_module)
+
+    nodes, _ = GraphCodeGenerator.generate_dag({"title": "Stub Paper"})
+    data_node = next(n for n in nodes if n.id == "data_pipeline")
+    assert "TODO" not in data_node.code
+    assert "TensorDataset" in data_node.code

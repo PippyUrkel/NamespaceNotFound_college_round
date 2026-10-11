@@ -293,9 +293,19 @@ class GraphService:
             modified_nodes=modified_nodes,
         )
 
+    # Generated code often hardcodes a value where the parameter belongs (`for epoch in range(150)`,
+    # `Adam(..., lr=0.001)`). Point those at the variable first, or tuning silently has no effect.
+    _HARDCODED_PARAMETER_USES: dict[str, tuple[str, str]] = {
+        "epochs": (r"(for\s+\w*epoch\w*\s+in\s+range\(\s*)\d+(\s*\))", r"\g<1>epochs\g<2>"),
+        "learning_rate": (r"(\blr\s*=\s*)\d*\.?\d+(?:[eE]-?\d+)?", r"\g<1>learning_rate"),
+    }
+
     @staticmethod
     def _update_code_parameter(code: str, key: str, value: Any) -> str:
         val_repr = repr(value) if isinstance(value, str) else str(value)
+        if key in GraphService._HARDCODED_PARAMETER_USES:
+            pattern, replacement = GraphService._HARDCODED_PARAMETER_USES[key]
+            code = re.sub(pattern, replacement, code)
         # 1. Variable assignment: key = ...
         p1 = rf"^(\s*{re.escape(key)}\s*=\s*)(.+)$"
         updated, c1 = re.subn(p1, rf"\g<1>{val_repr}", code, flags=re.MULTILINE)
