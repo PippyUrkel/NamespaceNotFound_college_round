@@ -26,6 +26,8 @@ from .docker_worker import DockerWorker
 from .executor import GraphExecutor
 from .feasibility import FeasibilityChecker
 from .models import (
+    EnvironmentBuildProgress,
+    EnvironmentPreview,
     ExecutionConfig,
     ExecutionManifest,
     ExecutionStatus,
@@ -57,7 +59,7 @@ class RunnerService:
         self._progress_log: dict[str, list[ProgressEvent]] = {}
 
     # ------------------------------------------------------------------
-    # Feasibility
+    # Feasibility & Environment Preview
     # ------------------------------------------------------------------
     def check_feasibility(
         self,
@@ -73,6 +75,48 @@ class RunnerService:
             docker_image=docker_image,
             pip_packages=pip_packages or [],
         )
+
+    def get_environment_preview(
+        self,
+        experiment_id: str,
+        graph_version_id: str | None = None,
+        docker_image: str | None = None,
+        extra_packages: list[str] | None = None,
+    ) -> EnvironmentPreview:
+        """Inspect all imports and verify library availability in Docker image before execution."""
+        graph = self._resolve_graph(experiment_id, graph_version_id)
+        spec = self._graph_service._load_spec(experiment_id)
+        target_image = docker_image or "crisisgrid-ml-base:latest"
+        return EnvironmentManager.get_environment_preview(
+            graph=graph,
+            docker_image=target_image,
+            spec=spec,
+            explicit_packages=extra_packages,
+        )
+
+    def get_environment_build_progress(self, experiment_id: str) -> EnvironmentBuildProgress:
+        """Get current or latest environment build progress."""
+        return EnvironmentManager.get_build_progress(experiment_id)
+
+    def prepare_environment(
+        self,
+        experiment_id: str,
+        packages: list[str],
+        base_image: str = "crisisgrid-ml-base:latest",
+    ) -> dict[str, Any]:
+        """Pre-install required packages into a Docker image before execution."""
+        prepared_image = EnvironmentManager.prepare_image(
+            packages=packages,
+            base_image=base_image,
+            experiment_id=experiment_id,
+        )
+        if self._docker_worker:
+            self._docker_worker._docker_image = prepared_image
+        return {
+            "docker_image": prepared_image,
+            "packages": packages,
+            "status": "ready",
+        }
 
     # ------------------------------------------------------------------
     # Submit execution
@@ -108,19 +152,47 @@ class RunnerService:
         )
         config.seeds = seeds
 
+        # Combine explicit pip packages from request and config overrides
+        explicit_pkgs = list(config.pip_packages)
+        if request.pip_packages:
+            for p in request.pip_packages:
+                if p not in explicit_pkgs:
+                    explicit_pkgs.append(p)
+
         # Detect required dependencies from graph code and spec
         spec = self._graph_service._load_spec(experiment_id)
         required_pkgs = EnvironmentManager.detect_required_packages(
             graph=graph,
             spec=spec,
-            explicit_packages=config.pip_packages,
+            explicit_packages=explicit_pkgs,
         )
         config.pip_packages = required_pkgs
+
+        # Progress tracking setup early for build logs and container runs
+        progress_log: list[ProgressEvent] = []
+        self._progress_log[execution_id] = progress_log
+
+        def on_progress(event: ProgressEvent) -> None:
+            progress_log.append(event)
+            print(f"[Runner] {event.event_type}: {event.message}", flush=True)
+
+        def on_build_progress(percent: int, step: str, line: str) -> None:
+            on_progress(
+                ProgressEvent(
+                    execution_id=execution_id,
+                    event_type="docker_build",
+                    message=f"[{percent}%] {step}: {line}",
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    details={"percent": percent, "step": step, "line": line},
+                )
+            )
 
         # Ensure all dependencies are installed in Docker image BEFORE containers start executing
         prepared_image = EnvironmentManager.prepare_image(
             packages=required_pkgs,
             base_image=config.docker_image,
+            experiment_id=experiment_id,
+            on_progress=on_build_progress,
         )
         config.docker_image = prepared_image
         if self._docker_worker:
@@ -181,14 +253,6 @@ class RunnerService:
         work_dir = self._get_work_dir(experiment_id, execution_id)
         cache_dir = self._artifacts_dir / "experiments" / experiment_id / "cache"
         cache = ExecutionCache(cache_dir)
-
-        # Progress tracking
-        progress_log: list[ProgressEvent] = []
-        self._progress_log[execution_id] = progress_log
-
-        def on_progress(event: ProgressEvent) -> None:
-            progress_log.append(event)
-            print(f"[Runner] {event.event_type}: {event.message}", flush=True)
 
         executor = GraphExecutor(
             work_dir=work_dir,
@@ -331,10 +395,38 @@ class RunnerService:
         if not seeds_to_run:
             return manifest
 
+        # Update packages if provided in resume request
+        if request.pip_packages:
+            for p in request.pip_packages:
+                if p not in manifest.config.pip_packages:
+                    manifest.config.pip_packages.append(p)
+            manifest.resolved_dependencies = EnvironmentManager.resolve_dependencies(manifest.config.pip_packages)
+
+        # Set up progress tracking
+        progress_log = self._progress_log.get(execution_id, [])
+        self._progress_log[execution_id] = progress_log
+
+        def on_progress(event: ProgressEvent) -> None:
+            progress_log.append(event)
+            print(f"[Runner] {event.event_type}: {event.message}", flush=True)
+
+        def on_build_progress(percent: int, step: str, line: str) -> None:
+            on_progress(
+                ProgressEvent(
+                    execution_id=execution_id,
+                    event_type="docker_build",
+                    message=f"[{percent}%] {step}: {line}",
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    details={"percent": percent, "step": step, "line": line},
+                )
+            )
+
         # Ensure dependencies image is prepared before resuming
         prepared_image = EnvironmentManager.prepare_image(
             packages=manifest.config.pip_packages,
             base_image=manifest.config.docker_image,
+            experiment_id=experiment_id,
+            on_progress=on_build_progress,
         )
         manifest.config.docker_image = prepared_image
         if self._docker_worker:
@@ -344,13 +436,6 @@ class RunnerService:
         work_dir = self._get_work_dir(experiment_id, execution_id)
         cache_dir = self._artifacts_dir / "experiments" / experiment_id / "cache"
         cache = ExecutionCache(cache_dir)
-
-        progress_log = self._progress_log.get(execution_id, [])
-        self._progress_log[execution_id] = progress_log
-
-        def on_progress(event: ProgressEvent) -> None:
-            progress_log.append(event)
-            print(f"[Runner] {event.event_type}: {event.message}", flush=True)
 
         executor = GraphExecutor(
             work_dir=work_dir,

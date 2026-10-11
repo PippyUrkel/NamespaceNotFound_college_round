@@ -12,20 +12,101 @@ Exposes:
 """
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
 from .models import (
+    EnvironmentBuildProgress,
+    EnvironmentPreview,
     ExecutionManifest,
     FeasibilityReport,
     ResumeExecutionRequest,
     SubmitExecutionRequest,
 )
 from .service import RunnerService
+from .environment_manager import EnvironmentManager
 
 router = APIRouter(prefix="/experiments", tags=["runner"])
 service = RunnerService()
+
+
+@router.get("/{experiment_id}/environment-preview", response_model=EnvironmentPreview)
+def get_experiment_environment_preview(
+    experiment_id: str,
+    version_id: str | None = Query(default=None),
+    docker_image: str = Query(default="crisisgrid-ml-base:latest"),
+    extra_packages: list[str] = Query(default=[]),
+) -> EnvironmentPreview:
+    """Preview Python imports across DAG nodes and verify library availability in the Docker image."""
+    try:
+        return service.get_environment_preview(
+            experiment_id=experiment_id,
+            graph_version_id=version_id,
+            docker_image=docker_image,
+            extra_packages=extra_packages,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Environment preview failed: {exc}") from exc
+
+
+@router.get("/{experiment_id}/environment-build-progress", response_model=EnvironmentBuildProgress)
+def get_experiment_environment_build_progress(experiment_id: str) -> EnvironmentBuildProgress:
+    """Get the current or latest container environment library installation progress."""
+    return service.get_environment_build_progress(experiment_id)
+
+
+@router.post("/{experiment_id}/prepare-environment")
+def prepare_experiment_environment(
+    experiment_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Pre-install required packages into a Docker image before execution."""
+    packages = payload.get("packages", [])
+    base_image = payload.get("base_image", "crisisgrid-ml-base:latest")
+    async_build = payload.get("async_build", False)
+
+    if async_build:
+        EnvironmentManager._record_progress(
+            experiment_id=experiment_id,
+            status="building",
+            docker_image=base_image,
+            packages=packages,
+            current_step=f"Queueing build for {len(packages)} packages...",
+            percent=5,
+            logs=[f"Build request queued for packages: {', '.join(packages)}"],
+        )
+
+        def run_build():
+            try:
+                service.prepare_environment(
+                    experiment_id=experiment_id,
+                    packages=packages,
+                    base_image=base_image,
+                )
+            except Exception as e:
+                print(f"[PrepareEnv Background Error] {e}", flush=True)
+
+        thread = threading.Thread(target=run_build, daemon=True)
+        thread.start()
+        return {
+            "status": "building",
+            "experiment_id": experiment_id,
+            "packages": packages,
+            "message": "Environment build initiated in background",
+        }
+
+    try:
+        return service.prepare_environment(
+            experiment_id=experiment_id,
+            packages=packages,
+            base_image=base_image,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Environment preparation failed: {exc}") from exc
 
 
 @router.get("/{experiment_id}/feasibility", response_model=FeasibilityReport)

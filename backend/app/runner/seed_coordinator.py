@@ -34,15 +34,15 @@ class SeedCoordinator:
         cls,
         explicit_seeds: list[int] | None,
         condition_provenance: dict[str, Any] | None = None,
-        min_seeds: int = 3,
+        min_seeds: int = 1,
         pad_explicit: bool = False,
     ) -> list[int]:
         """Determine which seeds to use.
 
         Priority:
         1. Explicitly requested seeds in the execution config (respected as-is unless pad_explicit=True)
-        2. Seeds from the condition provenance (padded to min_seeds)
-        3. Default seeds (42, 123, 7)
+        2. Seed picked up from the experiment condition provenance (single default seed)
+        3. Default single seed [42]
         """
         if explicit_seeds:
             if not pad_explicit or len(explicit_seeds) >= min_seeds:
@@ -56,9 +56,9 @@ class SeedCoordinator:
                     provenance_seed = int(seed_cond["value"])
                 except (ValueError, TypeError):
                     pass
-            seeds = [provenance_seed] if provenance_seed is not None else list(cls.DEFAULT_SEEDS)
+            seeds = [provenance_seed] if provenance_seed is not None else [cls.DEFAULT_SEEDS[0]]
         else:
-            seeds = list(cls.DEFAULT_SEEDS)
+            seeds = [cls.DEFAULT_SEEDS[0]] if min_seeds == 1 else list(cls.DEFAULT_SEEDS)
 
         # Pad to min_seeds if needed
         next_seed = 1000

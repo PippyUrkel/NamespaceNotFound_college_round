@@ -469,6 +469,8 @@ export default function App() {
                         activeVersionId={graph?.version_id}
                         latestExecution={latestExecution}
                         onRefreshExecution={() => loadExperimentDetails(selectedExpId)}
+                        spec={spec}
+                        graph={graph}
                       />
                     )}
                     {activeTab === 'evidence' && (

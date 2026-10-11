@@ -651,3 +651,147 @@ def test_environment_manager_detects_packages_and_prepares_image(test_env) -> No
     image = EnvironmentManager.prepare_image(pkgs)
     assert "crisisgrid" in image
 
+
+# ---------------------------------------------------------------------------
+# Test 13: Environment Preview & In-Container Verification
+# ---------------------------------------------------------------------------
+def test_environment_preview_and_library_verification(test_env) -> None:
+    graph = test_env["graph"]
+    # 1. Detailed imports detection
+    import_items = EnvironmentManager.detect_detailed_imports(graph)
+    mods = {i.module for i in import_items}
+    assert "torch" in mods
+    assert "numpy" in mods
+
+    # 2. In-container library verification
+    all_installed, verified, missing = EnvironmentManager.verify_container_libraries(
+        docker_image="crisisgrid-ml-base:latest",
+        import_items=import_items,
+    )
+    torch_item = next(i for i in verified if i.module == "torch")
+    assert torch_item.installed is True
+    assert torch_item.package == "torch"
+    assert "model_initialization" in torch_item.nodes
+
+    # 3. get_environment_preview with extra missing package
+    preview = EnvironmentManager.get_environment_preview(
+        graph=graph,
+        docker_image="crisisgrid-ml-base:latest",
+        explicit_packages=["some-nonexistent-package-xyz"],
+    )
+    assert "some-nonexistent-package-xyz" in preview.missing_packages
+    assert preview.all_installed is False
+
+
+# ---------------------------------------------------------------------------
+# Test 14: Environment Preview Endpoints and Resume with Updated Packages
+# ---------------------------------------------------------------------------
+def test_environment_endpoints_and_resume_with_pip_packages(test_env, monkeypatch) -> None:
+    exp_id = test_env["experiment_id"]
+    artifacts_dir = test_env["tmp_path"]
+
+    mock_worker = MockDockerWorker(work_dir=artifacts_dir)
+    test_service = RunnerService(artifacts_dir=artifacts_dir, docker_worker=mock_worker)
+    monkeypatch.setattr("backend.app.runner.routes.service", test_service)
+
+    client = TestClient(app)
+
+    # 1. Environment preview endpoint
+    res = client.get(f"/experiments/{exp_id}/environment-preview")
+    assert res.status_code == 200
+    data = res.json()
+    assert "docker_image" in data
+    assert "detected_imports" in data
+    assert any(i["module"] == "torch" for i in data["detected_imports"])
+
+    # 2. Prepare environment endpoint
+    prep_res = client.post(
+        f"/experiments/{exp_id}/prepare-environment",
+        json={"packages": ["torch", "numpy"], "base_image": "crisisgrid-ml-base:latest"},
+    )
+    assert prep_res.status_code == 200
+    prep_data = prep_res.json()
+    assert prep_data["status"] == "ready"
+    assert "crisisgrid" in prep_data["docker_image"]
+
+    # 3. Submit and resume execution with updated pip_packages
+    submit_res = client.post(
+        f"/experiments/{exp_id}/executions",
+        json={"seeds": [42], "skip_feasibility": True},
+    )
+    assert submit_res.status_code == 200
+    exec_id = submit_res.json()["execution_id"]
+
+    resume_res = client.post(
+        f"/experiments/{exp_id}/executions/{exec_id}/resume",
+        json={
+            "retry_failed": True,
+            "additional_seeds": [99],
+            "pip_packages": ["pandas", "scipy"],
+        },
+    )
+    assert resume_res.status_code == 200
+    resumed_data = resume_res.json()
+    assert "pandas" in resumed_data["config"]["pip_packages"]
+    assert "scipy" in resumed_data["config"]["pip_packages"]
+    assert any(sr["seed"] == 99 for sr in resumed_data["seed_runs"])
+
+
+# ---------------------------------------------------------------------------
+# Test 15: Build Progress Tracking and Single Default Seed
+# ---------------------------------------------------------------------------
+def test_environment_build_progress_tracking_and_single_default_seed(test_env, monkeypatch) -> None:
+    exp_id = test_env["experiment_id"]
+    artifacts_dir = test_env["tmp_path"]
+
+    # 1. Single seed default verification
+    cfg = ExecutionConfig()
+    assert cfg.seeds == [42], "ExecutionConfig must default to a single seed"
+
+    resolved = SeedCoordinator.resolve_seeds(
+        explicit_seeds=None,
+        condition_provenance={"seed": {"value": 777, "source": "paper"}},
+    )
+    assert resolved == [777], "Must prioritize paper provenance seed and keep only 1 seed by default"
+
+    # 2. REST API build progress retrieval
+    mock_worker = MockDockerWorker(work_dir=artifacts_dir)
+    test_service = RunnerService(artifacts_dir=artifacts_dir, docker_worker=mock_worker)
+    monkeypatch.setattr("backend.app.runner.routes.service", test_service)
+
+    client = TestClient(app)
+
+    # Initial idle progress
+    prog_res = client.get(f"/experiments/{exp_id}/environment-build-progress")
+    assert prog_res.status_code == 200
+    prog_data = prog_res.json()
+    assert prog_data["experiment_id"] == exp_id
+    assert prog_data["status"] in ("idle", "completed")
+
+    # Update progress and verify transparent client tracking
+    EnvironmentManager._record_progress(
+        experiment_id=exp_id,
+        status="building",
+        step="Downloading wheels",
+        pct=65,
+        log_line="Downloading torch-2.1.2-cp311-manylinux.whl (89.2 MB)",
+    )
+    live_res = client.get(f"/experiments/{exp_id}/environment-build-progress")
+    assert live_res.status_code == 200
+    live_data = live_res.json()
+    assert live_data["status"] == "building"
+    assert live_data["percent"] == 65
+    assert live_data["current_step"] == "Downloading wheels"
+    assert any("Downloading torch" in line for line in live_data["logs"])
+
+    # 3. Async build endpoint
+    async_res = client.post(
+        f"/experiments/{exp_id}/prepare-environment",
+        json={"packages": ["torch", "numpy"], "base_image": "crisisgrid-ml-base:latest", "async_build": True},
+    )
+    assert async_res.status_code == 200
+    async_data = async_res.json()
+    assert async_data["status"] == "building"
+
+
+

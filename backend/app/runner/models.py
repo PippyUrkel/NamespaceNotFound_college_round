@@ -10,7 +10,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -135,7 +135,7 @@ class NodeExecutionConfig(BaseModel):
 
 class ExecutionConfig(BaseModel):
     """Top-level execution configuration for an experiment run."""
-    seeds: list[int] = Field(default_factory=lambda: [42, 123, 7])
+    seeds: list[int] = Field(default_factory=lambda: [42])
     default_timeout_seconds: int = 600
     execution_timeout_seconds: int = 3600
     default_memory_limit_mb: int = 2048
@@ -261,6 +261,44 @@ class ExecutionManifest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Imports preview and verification models
+# ---------------------------------------------------------------------------
+class ImportItem(BaseModel):
+    """An imported module or package detected in DAG nodes."""
+    module: str
+    package: str
+    nodes: list[str] = Field(default_factory=list)
+    import_statements: list[str] = Field(default_factory=list)
+    installed: bool = False
+    installed_version: str | None = None
+    issue: str | None = None
+
+
+class EnvironmentPreview(BaseModel):
+    """Pre-flight inspection of all Python imports and container readiness."""
+    docker_image: str
+    detected_imports: list[ImportItem] = Field(default_factory=list)
+    required_packages: list[str] = Field(default_factory=list)
+    all_installed: bool = True
+    missing_packages: list[str] = Field(default_factory=list)
+    can_preinstall: bool = True
+
+
+class EnvironmentBuildProgress(BaseModel):
+    """Real-time progress and build output for container image preparation."""
+    experiment_id: str
+    status: Literal["idle", "building", "completed", "failed"] = "idle"
+    docker_image: str = ""
+    packages: list[str] = Field(default_factory=list)
+    current_step: str = ""
+    percent: int = 0
+    logs: list[str] = Field(default_factory=list)
+    error: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # Submission request & progress event
 # ---------------------------------------------------------------------------
 class SubmitExecutionRequest(BaseModel):
@@ -268,6 +306,8 @@ class SubmitExecutionRequest(BaseModel):
     graph_version_id: str | None = None
     seeds: list[int] | None = None
     config_overrides: dict[str, Any] = Field(default_factory=dict)
+    pip_packages: list[str] | None = None
+    auto_install_missing: bool = True
     skip_feasibility: bool = False
 
 
@@ -275,6 +315,8 @@ class ResumeExecutionRequest(BaseModel):
     """Request to resume a partially completed execution."""
     retry_failed: bool = True
     additional_seeds: list[int] = Field(default_factory=list)
+    pip_packages: list[str] | None = None
+    auto_install_missing: bool = True
 
 
 class ProgressEvent(BaseModel):

@@ -82,6 +82,24 @@ export const api = {
   // Feasibility
   getFeasibility: (id, verId) => request(`/experiments/${id}/feasibility${verId ? `?version_id=${verId}` : ''}`),
 
+  // Environment & Pre-Flight Imports
+  getEnvironmentPreview: (id, verId = null, dockerImage = null, extraPackages = []) => {
+    const params = new URLSearchParams();
+    if (verId) params.append('version_id', verId);
+    if (dockerImage) params.append('docker_image', dockerImage);
+    if (extraPackages && extraPackages.length > 0) {
+      extraPackages.forEach((p) => params.append('extra_packages', p));
+    }
+    const q = params.toString() ? `?${params.toString()}` : '';
+    return request(`/experiments/${id}/environment-preview${q}`);
+  },
+  prepareEnvironment: (id, payload) => request(`/experiments/${id}/prepare-environment`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }),
+  getEnvironmentBuildProgress: (id) => request(`/experiments/${id}/environment-build-progress`),
+
   // Execution Runner
   submitExecution: (id, payload) => request(`/experiments/${id}/executions`, {
     method: 'POST',
