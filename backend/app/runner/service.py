@@ -224,6 +224,8 @@ class RunnerService:
                 graph=graph,
                 docker_image=config.docker_image,
                 pip_packages=config.pip_packages,
+                default_timeout_seconds=config.default_timeout_seconds,
+                node_timeouts={nid: nc.timeout_seconds for nid, nc in config.node_configs.items()},
             )
 
         # Resolve dependencies and dataset identity for provenance

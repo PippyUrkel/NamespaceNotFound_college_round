@@ -4,6 +4,11 @@ import re
 from typing import Any
 from pydantic import BaseModel, Field
 
+try:
+    from backend.app.injestor.extractor import find_dataset_name
+except ModuleNotFoundError:  # pragma: no cover
+    from app.injestor.extractor import find_dataset_name
+
 
 class ParameterCondition(BaseModel):
     name: str
@@ -222,21 +227,21 @@ class ExperimentConditionResolver:
             paper_dataset = str(spec["dataset"]).strip()
             paper_evidence = f"Spec parameter dataset: {paper_dataset}"
         elif paper_text:
-            m = re.search(r"dataset[s]?\s*[:=]?\s*([A-Za-z0-9_\-]+)", paper_text, re.I)
-            if m:
-                paper_dataset = m.group(1).strip()
-                paper_evidence = f"Paper text excerpt: '{m.group(0)}'"
+            found = find_dataset_name(paper_text)
+            if found:
+                paper_dataset = found[0]
+                paper_evidence = f"Paper text excerpt: '{found[1]}'"
 
-        m2 = re.search(r"(?:dataset|data)\s*[:=]?\s*([A-Za-z0-9_\-]+)", repo_readme, re.I)
-        if m2:
-            repo_dataset = m2.group(1).strip()
-            repo_evidence = f"Repository README: '{m2.group(0)}'"
+        found = find_dataset_name(repo_readme)
+        if found:
+            repo_dataset = found[0]
+            repo_evidence = f"Repository README: '{found[1]}'"
         else:
             for fname, text in repo_files.items():
-                m_file = re.search(r"(?:dataset|data)\s*[:=]?\s*([A-Za-z0-9_\-]+)", text, re.I)
-                if m_file:
-                    repo_dataset = m_file.group(1).strip()
-                    repo_evidence = f"Repository {fname}: '{m_file.group(0)}'"
+                found = find_dataset_name(text)
+                if found:
+                    repo_dataset = found[0]
+                    repo_evidence = f"Repository {fname}: '{found[1]}'"
                     break
 
         if paper_dataset and repo_dataset:
@@ -599,7 +604,8 @@ class ExperimentConditionResolver:
             paper_evidence = f"Spec parameter architecture: {paper_arch}"
         elif paper_text:
             for arch in ["ResNet", "Transformer", "VGG", "BERT", "GPT", "MLP", "CNN"]:
-                if arch.lower() in paper_text.lower():
+                # Whole-word, and case-sensitive for acronyms, so "Hilbert" or "Robert" never reads as BERT
+                if re.search(rf"\b{arch}\b", paper_text, 0 if arch.isupper() else re.I):
                     paper_arch = arch
                     paper_evidence = f"Paper text mentioned architecture: {arch}"
                     break
@@ -664,7 +670,7 @@ class ExperimentConditionResolver:
             return ParameterCondition(name="metrics", value=metrics, source="paper", confidence=0.95)
         found: list[str] = []
         for m in ["accuracy", "f1", "precision", "recall", "mAP", "auc", "loss", "bleu"]:
-            if m in paper_text.lower():
+            if re.search(rf"\b{m}\b", paper_text, 0 if m == "mAP" else re.I):
                 found.append(m)
         if found:
             return ParameterCondition(name="metrics", value=found, source="paper", confidence=0.90)

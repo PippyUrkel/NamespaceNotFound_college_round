@@ -16,9 +16,15 @@ import os
 import subprocess
 import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    from backend.config import settings
+except ModuleNotFoundError:  # pragma: no cover
+    from config import settings
 
 from .models import (
     FailureReason,
@@ -35,10 +41,16 @@ class DockerWorker:
         self,
         work_dir: Path,
         docker_image: str = "python:3.11-slim",
+        shared_cache_dir: Path | None = None,
     ) -> None:
         self._work_dir = Path(work_dir).resolve()
         self._work_dir.mkdir(parents=True, exist_ok=True)
         self._docker_image = docker_image
+        # Downloads (datasets, pretrained weights, pip wheels) persist here across nodes, seeds and
+        # experiments. Every node re-runs its upstream code, so without this each node re-downloads.
+        self._shared_cache_dir = Path(shared_cache_dir or Path(settings.artifacts_dir) / "shared_cache").resolve()
+        for sub in ("data", "torch", "huggingface", "pip"):
+            (self._shared_cache_dir / sub).mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     # Public API
@@ -82,6 +94,10 @@ class DockerWorker:
             pkg_list = " ".join(pip_packages)
             pip_install_cmd = f"pip install --quiet {pkg_list} && "
 
+        # Unique per attempt: names shared across executions make concurrent runs (or a
+        # container still alive from a timed-out run) fail with "name already in use"
+        container_name = f"crisisgrid_{node_id}_{seed}_{uuid.uuid4().hex[:8]}"
+
         # Build docker run command
         cmd = self._build_docker_command(
             code_file=code_file,
@@ -91,6 +107,7 @@ class DockerWorker:
             config=cfg,
             upstream_outputs_dir=upstream_outputs_dir,
             pip_install_cmd=pip_install_cmd,
+            container_name=container_name,
         )
 
         try:
@@ -126,6 +143,15 @@ class DockerWorker:
                 status = RunStatus.resource_exhausted
                 failure_reason = FailureReason.oom
                 failure_detail = "Container killed (exit 137) — likely OOM"
+            elif result.returncode == 125:
+                # `docker run` itself failed (name conflict, bad mount, daemon error); the code never ran
+                docker_error = next(
+                    (line.strip() for line in (result.stderr or "").splitlines() if line.strip().startswith("docker:")),
+                    (result.stderr or "").strip()[:300],
+                )
+                status = RunStatus.failed
+                failure_reason = FailureReason.invalid_configuration
+                failure_detail = f"Docker refused to start the container (exit 125): {docker_error}"
             else:
                 status = RunStatus.failed
                 failure_reason = FailureReason.container_crash
@@ -150,7 +176,7 @@ class DockerWorker:
             completed_at = datetime.now(timezone.utc).isoformat()
             runtime = self._calc_runtime(started_at, completed_at)
             # Force kill the container
-            self._kill_container(node_id, seed)
+            self._kill_container(container_name)
             return NodeRunResult(
                 node_id=node_id,
                 status=RunStatus.timed_out,
@@ -201,8 +227,9 @@ class DockerWorker:
         config: NodeExecutionConfig,
         upstream_outputs_dir: Path | None = None,
         pip_install_cmd: str = "",
+        container_name: str | None = None,
     ) -> list[str]:
-        container_name = f"crisisgrid_{config.node_id}_{seed}"
+        container_name = container_name or f"crisisgrid_{config.node_id}_{seed}_{uuid.uuid4().hex[:8]}"
         node_dir_abs = Path(node_dir).resolve()
         output_dir_abs = Path(output_dir).resolve()
         network_mode = "bridge" if pip_install_cmd else "none"
@@ -218,6 +245,12 @@ class DockerWorker:
             "-e", f"CRISISGRID_SEED={seed}",
             "-v", f"{node_dir_abs}:/workspace",
             "-v", f"{output_dir_abs}:/workspace/output",
+            # Generated code conventionally downloads to ./data; back it with the shared cache
+            "-v", f"{self._shared_cache_dir / 'data'}:/workspace/data",
+            "-v", f"{self._shared_cache_dir}:/cache",
+            "-e", "TORCH_HOME=/cache/torch",
+            "-e", "HF_HOME=/cache/huggingface",
+            "-e", "PIP_CACHE_DIR=/cache/pip",
             "-w", "/workspace",
         ]
 
@@ -234,9 +267,8 @@ class DockerWorker:
 
         return cmd
 
-    def _kill_container(self, node_id: str, seed: int) -> None:
+    def _kill_container(self, container_name: str) -> None:
         """Force-kill a timed-out container."""
-        container_name = f"crisisgrid_{node_id}_{seed}"
         try:
             subprocess.run(
                 ["docker", "kill", container_name],

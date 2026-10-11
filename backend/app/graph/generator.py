@@ -70,7 +70,10 @@ class GraphCodeGenerator:
                 "5. 'evaluation_pipeline': Python code evaluating test metrics. It must store the final metrics in a dict named "
                 "`eval_results` (metric name -> number, in the same units the paper reports, e.g. accuracy as a percentage) "
                 "and call report_metric(name, value) for each one.\n"
-                "6. 'claim_verification': Python code comparing verified metric with claimed results.\n\n"
+                "6. 'claim_verification': Python code comparing verified metric with claimed results.\n"
+                "The variables `epochs`, `learning_rate`, `batch_size` and `seed` are predefined with the values below; "
+                "use them (e.g. `for epoch in range(epochs)`, `lr=learning_rate`) instead of hardcoding numbers, "
+                "so that tuning a parameter changes the code that runs.\n\n"
                 f"Paper title: {spec.get('title')}\n"
                 f"Parameters: dataset={conditions.dataset.value} (source={conditions.dataset.source}), optimizer={conditions.optimizer.value}, "
                 f"learning_rate={conditions.learning_rate.value}, batch_size={conditions.batch_size.value}, epochs={conditions.epochs.value}, "
@@ -86,6 +89,11 @@ class GraphCodeGenerator:
             )
             raw = json.loads(response.choices[0].message.content)
             if isinstance(raw, dict) and "setup_environment" in raw:
+                stubbed = cls._find_placeholder_nodes(raw)
+                if stubbed:
+                    # Incomplete stubs (e.g. a Dataset whose __len__ returns 0) only fail later inside the runner
+                    print(f"[GraphCodeGenerator] Groq code rejected, placeholder stubs in: {stubbed}", flush=True)
+                    return None
                 return cls._build_nodes_from_code_dict(raw, spec, repo_files, source="paper_llm_generated", conditions=conditions)
         except Exception as exc:
             print(f"[GraphCodeGenerator] Groq code synthesis skipped: {exc}", flush=True)
@@ -542,6 +550,20 @@ print(f"Reproducibility Claim Verification: {{verification_report}}")
                 edges.append(DAGEdge(source=node.id, target=target))
 
         return nodes, edges
+
+    _PLACEHOLDER_PATTERNS = (
+        re.compile(r"\bTODO\b"),
+        re.compile(r"\braise\s+NotImplementedError\b"),
+        re.compile(r"def\s+__len__\s*\(\s*self\s*\)\s*:\s*\n?\s*return\s+0\b"),
+    )
+
+    @classmethod
+    def _find_placeholder_nodes(cls, code_dict: dict[str, Any]) -> list[str]:
+        return [
+            node_id
+            for node_id, code in code_dict.items()
+            if isinstance(code, str) and any(p.search(code) for p in cls._PLACEHOLDER_PATTERNS)
+        ]
 
     @classmethod
     def _find_repo_code(cls, repo_files: dict[str, str], patterns: list[str]) -> str | None:
