@@ -37,11 +37,6 @@ Extract scientific ML specifications from research papers and repositories, synt
 - Intermediate artifact caching with content-addressable hash keys for fast iterative testing.
 - Aggregated statistical reporting across valid completed seeds with anomaly flagging.
 
-## Documentation
-
-Complete documentation, setup instructions, and feature walkthroughs are available here:
-
-**https://github.com/PippyUrkel/NamespaceNotFound_college_round**
 
 ### Application Screenshots
 
