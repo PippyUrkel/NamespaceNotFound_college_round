@@ -142,6 +142,13 @@ class GraphService:
         new_nodes: list[DAGNode] = [DAGNode.model_validate(n.model_dump()) for n in current.nodes]
         param_changes_desc: list[str] = []
 
+        # Clients may send numeric fields as strings (e.g. seed "0"); a quoted seed crashes np.random.seed
+        for param_key in self._INTEGER_PARAMETERS & request.parameters.keys():
+            try:
+                request.parameters[param_key] = int(request.parameters[param_key])
+            except (TypeError, ValueError):
+                pass
+
         # 1. Update parameters across nodes
         for param_key, param_value in request.parameters.items():
             param_changes_desc.append(f"{param_key}={param_value}")
@@ -292,6 +299,8 @@ class GraphService:
             code_changes=code_diffs,
             modified_nodes=modified_nodes,
         )
+
+    _INTEGER_PARAMETERS = frozenset({"seed", "batch_size", "epochs"})
 
     # Generated code often hardcodes a value where the parameter belongs (`for epoch in range(150)`,
     # `Adam(..., lr=0.001)`). Point those at the variable first, or tuning silently has no effect.

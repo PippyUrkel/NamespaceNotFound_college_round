@@ -28,7 +28,6 @@ class IngestionService:
         artifact_dir.mkdir(parents=True, exist_ok=True)
 
         paper_values = {
-            "title": paper_analysis.get("title") or extracted.get("title"),
             "dataset": extracted.get("dataset"),
             "optimizer": extracted.get("optimizer"),
             "learning_rate": extracted.get("learning_rate"),
@@ -36,19 +35,10 @@ class IngestionService:
             "epochs": extracted.get("epochs"),
             "seed": extracted.get("seed"),
             "metrics": extracted.get("metrics", []),
-            "architecture": extracted.get("architecture"),
+            # The rule-based extractor writes this placeholder when the paper names no architecture
+            "architecture": None if extracted.get("architecture") == "inferred from paper" else extracted.get("architecture"),
         }
-        repo_values = {
-            "repository_url": repo_url,
-            "dataset": (repo_analysis or {}).get("files", {}).get("README.md") or (repo_analysis or {}).get("readme"),
-            "optimizer": None,
-            "learning_rate": None,
-            "batch_size": None,
-            "epochs": None,
-            "seed": None,
-            "metrics": [],
-            "architecture": None,
-        }
+        repo_values = self._repo_values(repo_analysis)
         discrepancies = ComparisonService.compare(paper_values, repo_values)
         feasibility = FeasibilityService.assess(extracted, repo_analysis=repo_analysis)
         dag = DagBuilder.build()
@@ -95,6 +85,25 @@ class IngestionService:
             print(f"[IngestionService] Graph initialization warning: {exc}", flush=True)
 
         return result
+
+    @staticmethod
+    def _repo_values(repo_analysis: dict | None) -> dict:
+        """Configuration values the repository itself states, or None where it states nothing."""
+        fields = ("dataset", "optimizer", "learning_rate", "batch_size", "epochs", "seed", "metrics", "architecture")
+        if not repo_analysis:
+            return dict.fromkeys(fields)
+        try:
+            from backend.app.graph.parameters import ExperimentConditionResolver
+        except ModuleNotFoundError:  # pragma: no cover
+            from app.graph.parameters import ExperimentConditionResolver
+        # With no paper input, a condition resolved from the repository is exactly the repo's value;
+        # anything else was assumed, meaning the repo never stated it.
+        report = ExperimentConditionResolver.resolve_conditions({}, {}, repo_analysis)
+        values = {}
+        for name in fields:
+            condition = getattr(report, name)
+            values[name] = condition.value if condition.source == "repository" else None
+        return values
 
     @staticmethod
     def load_from_artifact(experiment_id: str, artifacts_dir: str | Path | None = None) -> dict | None:
