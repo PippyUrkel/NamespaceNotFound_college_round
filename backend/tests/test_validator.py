@@ -219,3 +219,23 @@ def test_graph_validation_and_remediation_api_endpoints(sample_exp_id: str) -> N
     assert remed_data["remediated"] is True
     assert remed_data["report"]["is_valid"] is True
     assert remed_data["version"]["version_id"] == "v3"
+
+
+def test_validator_normalizes_semicolon_separated_code() -> None:
+    """Verifies that single-line semicolon-separated statements are formatted into multi-line code."""
+    from backend.app.graph.validator import normalize_code
+
+    raw_snippet = (
+        "import torch,random,numpy as np;torch.manual_seed(seed);"
+        "np.random.seed(seed);random.seed(seed);"
+        "device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')"
+    )
+    cleaned = normalize_code(raw_snippet)
+    lines = [line.strip() for line in cleaned.split("\n") if line.strip()]
+    assert len(lines) == 5
+    assert lines[0] == "import torch,random,numpy as np"
+    assert lines[1] == "torch.manual_seed(seed)"
+    assert lines[2] == "np.random.seed(seed)"
+    assert lines[3] == "random.seed(seed)"
+    assert lines[4] == "device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')"
+

@@ -4,7 +4,7 @@
 # Build with:
 #   docker build -t crisisgrid-ml-base:latest .
 
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Prevent interactive prompts during apt install
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -31,9 +31,9 @@ RUN mkdir -p /workspace /workspace/data /workspace/output /cache /cache/pip /cac
 
 WORKDIR /workspace
 
-# Install PyTorch CPU wheels
+# Install PyTorch with CUDA support (falls back to CPU automatically if no GPU is available)
 RUN pip install --no-cache-dir \
-    torch torchvision --index-url https://download.pytorch.org/whl/cpu
+    torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
 # Install standard core scientific and ML packages
 RUN pip install --no-cache-dir \

@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import ast
 import builtins
+import io
 import re
+import tokenize
 from typing import Any
 
 from .models import (
@@ -34,6 +36,45 @@ STANDARD_HARNESS_SYMBOLS = {
     "report_metric", "crisisgrid_metrics",
     "os", "sys", "json", "random",
 }
+
+
+def normalize_code(src: str) -> str:
+    """Normalize statement separators and newlines.
+
+    Transforms semicolon-delimited single-line or comma-separated statements into clean,
+    properly indented multi-line Python code while preserving comments, strings, and whitespace.
+    """
+    if not isinstance(src, str):
+        return src
+    src = src.replace("\r\n", "\n").replace("\\r\\n", "\n").replace("\\n", "\n")
+    if ";" not in src:
+        return src
+
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(src).readline))
+        semis = [tok for tok in tokens if tok.type == tokenize.OP and tok.string == ";"]
+        if not semis:
+            return src
+        lines = [list(l) for l in src.split("\n")]
+        for tok in reversed(semis):
+            r, c = tok.start[0] - 1, tok.start[1]
+            if r < len(lines) and c < len(lines[r]):
+                spaces_after = 0
+                while c + 1 + spaces_after < len(lines[r]) and lines[r][c + 1 + spaces_after] == " ":
+                    spaces_after += 1
+                line_str = "".join(lines[r])
+                remainder = line_str[c + 1 + spaces_after:].strip()
+                if not remainder:
+                    lines[r] = lines[r][:c]
+                else:
+                    indent = len(line_str) - len(line_str.lstrip())
+                    lines[r] = lines[r][:c] + ["\n" + (" " * indent)] + lines[r][c + 1 + spaces_after:]
+        return "\n".join("".join(l) for l in lines)
+    except Exception:
+        try:
+            return ast.unparse(ast.parse(src))
+        except Exception:
+            return src
 
 
 class SymbolScopeVisitor(ast.NodeVisitor):
@@ -221,6 +262,7 @@ class SequentialCodeValidator:
         parameters: dict[str, Any] | None = None,
     ) -> tuple[NodeScopeSummary, list[ValidationIssue]]:
         """Extract defined and referenced symbols from node code via AST."""
+        code = normalize_code(code)
         params = parameters or {}
         summary = NodeScopeSummary(node_id=node_id)
         issues: list[ValidationIssue] = []
@@ -270,6 +312,11 @@ class SequentialCodeValidator:
         available_harness = set(harness_symbols or STANDARD_HARNESS_SYMBOLS)
         issues: list[ValidationIssue] = []
         node_scopes: dict[str, NodeScopeSummary] = {}
+
+        # Normalize statement separators across all nodes first
+        for n in graph.nodes:
+            n.code = normalize_code(n.code)
+
         node_map = {n.id: n for n in graph.nodes}
         execution_order = graph.execution_order or [n.id for n in graph.nodes]
 
@@ -479,6 +526,7 @@ class SequentialCodeValidator:
         parameters: dict[str, Any] | None = None,
     ) -> str:
         """Inject safe missing declarations into node code."""
+        code = normalize_code(code)
         params = parameters or {}
         injections: list[str] = []
 
@@ -589,7 +637,7 @@ class SequentialCodeValidator:
             for k, v in node.parameters.items():
                 if not k.startswith("_"):
                     combined_code_lines.append(f"{k} = {repr(v)}")
-            combined_code_lines.append(node.code)
+            combined_code_lines.append(normalize_code(node.code))
             combined_code_lines.append("")
 
         combined_code = "\n".join(combined_code_lines)

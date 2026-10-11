@@ -168,8 +168,11 @@ class GraphExecutor:
                     memory_limit_mb=self._config.default_memory_limit_mb,
                     cpu_limit=self._config.default_cpu_limit,
                     max_retries=self._config.max_retries,
+                    use_gpu=getattr(self._config, "use_gpu", True),
                 ),
             )
+            if not hasattr(node_exec_config, "use_gpu") or node_exec_config.use_gpu is None:
+                node_exec_config.use_gpu = getattr(self._config, "use_gpu", True)
 
             # Inject seed into environment
             node_exec_config.environment["CRISISGRID_SEED"] = str(seed)

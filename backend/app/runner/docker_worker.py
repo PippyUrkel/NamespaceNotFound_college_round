@@ -221,6 +221,117 @@ class DockerWorker:
                 exit_code=-1,
             )
 
+    _gpu_args_cache: list[str] | None = None
+
+    @classmethod
+    def get_gpu_docker_args(cls) -> list[str]:
+        """Determine the appropriate Docker arguments to pass GPU into containers.
+
+        Supports:
+        1. Standard NVIDIA Container Toolkit (`--gpus all`) if Docker runtime supports it.
+        2. Direct device & driver library passthrough (/dev/nvidia* + libcuda.so.1 mounts)
+           for Linux systems where CDI/toolkit is not configured.
+        3. Graceful fallback to empty list [] if no GPU or driver is available.
+        """
+        if cls._gpu_args_cache is not None:
+            return cls._gpu_args_cache
+
+        # 1. Try standard Docker GPU flag (--gpus all)
+        try:
+            probe = subprocess.run(
+                ["docker", "run", "--rm", "--gpus", "all", "alpine:latest", "true"],
+                capture_output=True,
+                timeout=5,
+            )
+            if probe.returncode == 0:
+                cls._gpu_args_cache = ["--gpus", "all"]
+                return cls._gpu_args_cache
+        except Exception:
+            pass
+
+        # 2. Check for direct NVIDIA character devices on the host (/dev/nvidia0, /dev/nvidiactl, etc.)
+        nvidia_devs = [
+            "/dev/nvidia0",
+            "/dev/nvidiactl",
+            "/dev/nvidia-uvm",
+            "/dev/nvidia-uvm-tools",
+            "/dev/nvidia-modeset",
+        ]
+        available_devs = [d for d in nvidia_devs if os.path.exists(d)]
+        for i in range(1, 16):
+            dev = f"/dev/nvidia{i}"
+            if os.path.exists(dev) and dev not in available_devs:
+                available_devs.append(dev)
+
+        if available_devs:
+            args: list[str] = []
+            for d in available_devs:
+                args.extend(["--device", d])
+
+            # Check driver libraries to mount
+            cuda_lib_candidates = [
+                "/usr/lib/libcuda.so.1",
+                "/usr/lib64/libcuda.so.1",
+                "/usr/lib/x86_64-linux-gnu/libcuda.so.1",
+                "/usr/local/cuda/lib64/libcuda.so.1",
+            ]
+            nvml_lib_candidates = [
+                "/usr/lib/libnvidia-ml.so.1",
+                "/usr/lib64/libnvidia-ml.so.1",
+                "/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1",
+            ]
+
+            cuda_lib = next((p for p in cuda_lib_candidates if os.path.exists(p)), None)
+            nvml_lib = next((p for p in nvml_lib_candidates if os.path.exists(p)), None)
+
+            if cuda_lib:
+                args.extend([
+                    "-v", f"{cuda_lib}:/usr/lib/x86_64-linux-gnu/libcuda.so.1:ro",
+                    "-v", f"{cuda_lib}:/usr/lib/libcuda.so.1:ro",
+                ])
+            if nvml_lib:
+                args.extend([
+                    "-v", f"{nvml_lib}:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro",
+                    "-v", f"{nvml_lib}:/usr/lib/libnvidia-ml.so.1:ro",
+                ])
+
+            for smi in ["/usr/bin/nvidia-smi", "/bin/nvidia-smi"]:
+                if os.path.exists(smi):
+                    args.extend(["-v", f"{smi}:/usr/bin/nvidia-smi:ro"])
+                    break
+
+            cls._gpu_args_cache = args
+            return cls._gpu_args_cache
+
+        # 3. Fallback: no GPU available
+        cls._gpu_args_cache = []
+        return cls._gpu_args_cache
+
+    @classmethod
+    def get_host_venv_mount_args(cls, docker_image: str) -> tuple[list[str], str | None]:
+        """Check if host backend virtual environment with CUDA PyTorch is available.
+
+        If so, mount it to provide immediate GPU acceleration and pre-installed packages
+        without slow Docker container rebuilds.
+        """
+        possible_venv_paths = [
+            Path(__file__).resolve().parent.parent.parent / ".venv" / "lib" / "python3.12" / "site-packages",
+            Path("/home/andre/Desktop/devwork2026/Hackathons/NamespaceNotFound_college_round/backend/.venv/lib/python3.12/site-packages"),
+        ]
+        venv_path = next((p for p in possible_venv_paths if p.exists() and (p / "torch").exists()), None)
+        if not venv_path:
+            return [], None
+
+        override_image = None
+        if "3.11" in docker_image or docker_image == "crisisgrid-ml-base:latest":
+            override_image = "python:3.12-slim"
+
+        mount_args = [
+            "-v", f"{venv_path.resolve()}:/opt/host_site_packages:ro",
+            "-e", "PYTHONPATH=/opt/host_site_packages",
+        ]
+        return mount_args, override_image
+
     # ------------------------------------------------------------------
     # Docker command building
     # ------------------------------------------------------------------
@@ -239,6 +350,8 @@ class DockerWorker:
         node_dir_abs = Path(node_dir).resolve()
         output_dir_abs = Path(output_dir).resolve()
         network_mode = "bridge" if pip_install_cmd else "none"
+
+        image_to_use = self._docker_image
 
         cmd = [
             "docker", "run",
@@ -260,6 +373,20 @@ class DockerWorker:
             "-w", "/workspace",
         ]
 
+        # GPU passthrough support
+        if getattr(config, "use_gpu", True):
+            gpu_args = self.get_gpu_docker_args()
+            if gpu_args:
+                cmd.extend(gpu_args)
+                cmd.extend(["--shm-size=2g"])
+
+        # Check if host Python 3.12 site packages are available for pre-installed ML packages
+        host_venv_args, override_image = self.get_host_venv_mount_args(image_to_use)
+        if host_venv_args:
+            cmd.extend(host_venv_args)
+        if override_image:
+            image_to_use = override_image
+
         # Mount upstream outputs if available (always resolve to absolute path)
         if upstream_outputs_dir and Path(upstream_outputs_dir).exists():
             cmd.extend(["-v", f"{Path(upstream_outputs_dir).resolve()}:/workspace/upstream:ro"])
@@ -268,7 +395,7 @@ class DockerWorker:
         for k, v in config.environment.items():
             cmd.extend(["-e", f"{k}={v}"])
 
-        cmd.append(self._docker_image)
+        cmd.append(image_to_use)
         cmd.extend(["bash", "-c", f"{pip_install_cmd}python /workspace/run.py"])
 
         return cmd
@@ -296,6 +423,14 @@ class DockerWorker:
         upstream_code: str | None = None,
     ) -> str:
         """Wrap user code with deterministic seed setup, device definition, and metrics capture."""
+        try:
+            from backend.app.graph.validator import normalize_code
+            code = normalize_code(code)
+            if upstream_code:
+                upstream_code = normalize_code(upstream_code)
+        except Exception:
+            pass
+
         lines = [
             "import os, sys, json, random",
             "",

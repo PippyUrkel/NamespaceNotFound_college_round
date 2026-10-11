@@ -1,0 +1,9 @@
+.git
+**/node_modules
+test_frontend/node_modules
+test_frontend/dist
+backend/artifacts
+artifacts
+**/__pycache__
+**/*.pyc
+.cache

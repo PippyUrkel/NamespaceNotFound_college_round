@@ -231,6 +231,11 @@ box-shadow: 0 0 0 3px rgba(215, 255, 100, 0.045);
 flex: 0 0 auto;
 }
 
+.cg-runner-input-shell.is-gpu-shell-active {
+border-color: rgba(245, 158, 11, 0.45);
+background: rgba(245, 158, 11, 0.06);
+}
+
 .cg-runner-input-shell input {
 width: 100%;
 min-width: 0;

@@ -426,7 +426,7 @@ class EnvironmentManager:
     def generate_dockerfile(
         cls,
         extra_packages: list[str] | None = None,
-        base_image: str = "python:3.11-slim",
+        base_image: str = "python:3.12-slim",
     ) -> str:
         """Generate a complete, reproducible Dockerfile for the CrisisGrid ML execution environment."""
         extra_run = ""
@@ -464,8 +464,9 @@ RUN mkdir -p /workspace /workspace/data /workspace/output /cache /cache/pip /cac
 
 WORKDIR /workspace
 
+# Install PyTorch with CUDA support (automatically uses CPU when no GPU is present)
 RUN pip install --no-cache-dir \\
-    torch torchvision --index-url https://download.pytorch.org/whl/cpu
+    torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
 RUN pip install --no-cache-dir \\
     numpy \\

@@ -145,6 +145,8 @@ class RunnerService:
             **{k: v for k, v in request.config_overrides.items()
                if k in ExecutionConfig.model_fields},
         )
+        if getattr(request, "use_gpu", None) is not None:
+            config.use_gpu = request.use_gpu
 
         # Resolve seeds
         seeds = SeedCoordinator.resolve_seeds(
@@ -404,12 +406,15 @@ class RunnerService:
         if not seeds_to_run:
             return manifest
 
-        # Update packages if provided in resume request
+        # Update packages and hardware settings if provided in resume request
         if request.pip_packages:
             for p in request.pip_packages:
                 if p not in manifest.config.pip_packages:
                     manifest.config.pip_packages.append(p)
             manifest.resolved_dependencies = EnvironmentManager.resolve_dependencies(manifest.config.pip_packages)
+
+        if getattr(request, "use_gpu", None) is not None:
+            manifest.config.use_gpu = request.use_gpu
 
         # Set up progress tracking
         progress_log = self._progress_log.get(execution_id, [])

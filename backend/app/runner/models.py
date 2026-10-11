@@ -131,6 +131,7 @@ class NodeExecutionConfig(BaseModel):
     memory_limit_mb: int = 2048
     cpu_limit: float = 2.0
     environment: dict[str, str] = Field(default_factory=dict)
+    use_gpu: bool = True
 
 
 class ExecutionConfig(BaseModel):
@@ -143,8 +144,9 @@ class ExecutionConfig(BaseModel):
     max_retries: int = 1
     enable_cache: bool = True
     node_configs: dict[str, NodeExecutionConfig] = Field(default_factory=dict)
-    docker_image: str = "python:3.11-slim"
+    docker_image: str = "crisisgrid-ml-base:latest"
     pip_packages: list[str] = Field(default_factory=list)
+    use_gpu: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +312,7 @@ class SubmitExecutionRequest(BaseModel):
     auto_install_missing: bool = True
     skip_feasibility: bool = False
     async_run: bool = False
+    use_gpu: bool = True
 
 
 class ResumeExecutionRequest(BaseModel):
@@ -319,6 +322,7 @@ class ResumeExecutionRequest(BaseModel):
     pip_packages: list[str] | None = None
     auto_install_missing: bool = True
     async_run: bool = False
+    use_gpu: bool = True
 
 
 class ProgressEvent(BaseModel):

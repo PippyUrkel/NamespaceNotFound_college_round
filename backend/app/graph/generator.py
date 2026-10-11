@@ -517,11 +517,8 @@ print(f"Reproducibility Claim Verification: {{verification_report}}")
         for defn in node_defs:
             nid = defn["id"]
             code = code_dict.get(nid, f"# {nid}\npass\n")
-            # Some LLM responses encode a code block's line breaks as the
-            # literal two-character sequence "\n". Normalize that form before
-            # the runner writes the node to /workspace/run.py.
-            if isinstance(code, str) and "\\n" in code:
-                code = code.replace("\\r\\n", "\n").replace("\\n", "\n")
+            from .validator import normalize_code
+            code = normalize_code(code)
             prov_src = defn.get("provenance_source", source)
             if prov_src not in valid_sources:
                 prov_src = "deterministic_synthesis"

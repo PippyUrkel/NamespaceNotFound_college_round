@@ -28,6 +28,7 @@ import {
   FileCode,
   Layers,
   Copy,
+  Zap,
 } from 'lucide-react';
 import { api } from '../api';
 import './RunnerTab.css';
@@ -78,6 +79,7 @@ export default function RunnerTab({
   const [timeoutSec, setTimeoutSec] = useState('600');
   const [memMb, setMemMb] = useState('2048');
   const [cpuLimit, setCpuLimit] = useState('2.0');
+  const [useGpu, setUseGpu] = useState(true);
   const [running, setRunning] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -362,7 +364,9 @@ export default function RunnerTab({
           default_timeout_seconds: timeout,
           default_memory_limit_mb: memory,
           default_cpu_limit: cpu,
+          use_gpu: useGpu,
         },
+        use_gpu: useGpu,
         skip_feasibility: false,
         async_run: true,
       };
@@ -394,6 +398,7 @@ export default function RunnerTab({
           retry_failed: true,
           additional_seeds: [],
           pip_packages: customPackages,
+          use_gpu: useGpu,
           async_run: true,
         }
       );
@@ -432,6 +437,7 @@ export default function RunnerTab({
           retry_failed: true,
           additional_seeds: [],
           pip_packages: customPackages,
+          use_gpu: useGpu,
           async_run: true,
         }
       );
@@ -1033,6 +1039,37 @@ export default function RunnerTab({
 
             <small>Compute allocation per container</small>
           </div>
+
+          <div className="cg-runner-field">
+            <label htmlFor="cg-runner-gpu">
+              GPU acceleration
+            </label>
+
+            <div
+              id="cg-runner-gpu"
+              className={`cg-runner-input-shell ${useGpu ? 'is-gpu-shell-active' : ''}`}
+              onClick={() => !running && !isActive && setUseGpu(!useGpu)}
+              style={{ cursor: running || isActive ? 'not-allowed' : 'pointer' }}
+              role="button"
+              tabIndex={0}
+            >
+              <Zap size={15} style={{ color: useGpu ? '#f59e0b' : '#64748b' }} />
+
+              <span style={{ fontSize: '12px', fontWeight: 600, flex: 1, color: useGpu ? '#f1f5f9' : '#94a3b8' }}>
+                {useGpu ? 'NVIDIA GPU (CUDA)' : 'CPU Only'}
+              </span>
+
+              <span className="cg-runner-input-unit" style={{ color: useGpu ? '#10b981' : '#64748b' }}>
+                {useGpu ? 'ON' : 'OFF'}
+              </span>
+            </div>
+
+            <small>
+              {useGpu
+                ? 'Host GPU passed into containers for accelerated ML execution'
+                : 'Run containers CPU-only without GPU passthrough'}
+            </small>
+          </div>
         </div>
 
         <div className="cg-runner-launch-foot">
@@ -1092,6 +1129,14 @@ export default function RunnerTab({
                 {exec.total_runtime_seconds != null
                   ? `${exec.total_runtime_seconds.toFixed(2)}s`
                   : '—'}
+              </strong>
+            </div>
+
+            <div className="cg-runner-meta-item">
+              <span>ACCELERATION</span>
+              <strong style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <Zap size={13} style={{ color: exec.config?.use_gpu ? '#f59e0b' : '#64748b' }} />
+                {exec.config?.use_gpu ? (exec.hardware?.gpu_name || 'GPU (CUDA)') : 'CPU'}
               </strong>
             </div>
 

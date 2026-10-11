@@ -65,20 +65,18 @@ class FeasibilityChecker:
         reasons: list[str] = []
         warnings: list[str] = []
 
-        # Docker availability is critical
+        # Docker availability is advisory/warning only — hardware-based blocking is disabled
         if not resources.docker_available:
-            reasons.append(
-                "Docker is not available on this host. "
-                "All experiment code runs inside Docker containers for isolation."
+            warnings.append(
+                "Docker daemon was not detected on this host. Hardware-based blocking is disabled; containers will run if Docker is started."
             )
 
-        # Memory check
+        # Memory check — advisory/warning only, never blocks
         total_ram_needed = sum(r.estimated_ram_mb for r in requirements)
         if resources.ram_mb > 0 and total_ram_needed > resources.ram_mb:
             warnings.append(
                 f"Total estimated RAM needed ({total_ram_needed} MB) exceeds "
-                f"available ({resources.ram_mb} MB). Nodes will be run "
-                f"sequentially but may swap or OOM."
+                f"available ({resources.ram_mb} MB). Hardware limit blocking is disabled so execution will proceed."
             )
 
         # Disk check
@@ -89,14 +87,16 @@ class FeasibilityChecker:
                 f"available space ({resources.disk_mb} MB)."
             )
 
-        # GPU check — informational, not blocking. Containers are started without --gpus,
-        # so a GPU on the host is never visible to experiment code.
+        # GPU check — informational, not blocking
         gpu_required = any(r.requires_gpu for r in requirements)
-        if gpu_required:
-            host_gpu = f"The host GPU ({resources.gpu_name}) is not passed through. " if resources.gpu_available else ""
+        if resources.gpu_available:
             warnings.append(
-                "One or more nodes use a GPU when available, but experiment containers run CPU-only. "
-                f"{host_gpu}Training will run on CPU, which affects runtime and may affect "
+                f"GPU acceleration is enabled: Host GPU ({resources.gpu_name}) is passed directly into execution containers."
+            )
+        elif gpu_required:
+            warnings.append(
+                "One or more nodes use a GPU when available, but no GPU was detected on host. "
+                "Training will run on CPU, which affects runtime and may affect "
                 "numerical results. This is reported, not silently hidden."
             )
 
@@ -184,17 +184,28 @@ class FeasibilityChecker:
         # RAM
         ram_mb = 0
         try:
-            if platform.system() == "Linux":
-                with open("/proc/meminfo") as f:
-                    for line in f:
-                        if line.startswith("MemAvailable:"):
-                            ram_mb = int(line.split()[1]) // 1024
-                            break
-            elif platform.system() == "Darwin":
-                out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True)
-                ram_mb = int(out.strip()) // (1024 * 1024)
+            import psutil
+            ram_mb = int(psutil.virtual_memory().available // (1024 * 1024))
         except Exception:
             pass
+
+        if ram_mb <= 0:
+            try:
+                if platform.system() == "Linux":
+                    with open("/proc/meminfo") as f:
+                        for line in f:
+                            if line.startswith("MemAvailable:") or line.startswith("MemTotal:"):
+                                ram_mb = int(line.split()[1]) // 1024
+                                break
+                elif platform.system() == "Darwin":
+                    out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True)
+                    ram_mb = int(out.strip()) // (1024 * 1024)
+            except Exception:
+                pass
+
+        # If RAM is undetectable on host (e.g. restricted VM/container), safe fallback to 8192 MB
+        if ram_mb <= 0:
+            ram_mb = 8192
 
         # Disk
         disk_mb = 0
