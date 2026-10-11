@@ -23,6 +23,11 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     from app.report.routes import router as report_router
 
+try:
+    from backend.app.retrieval.routes import router as retrieval_router
+except ModuleNotFoundError:  # pragma: no cover
+    from app.retrieval.routes import router as retrieval_router
+
 app = FastAPI(title="CrisisGrid", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -36,6 +41,7 @@ app.include_router(graph_router)
 app.include_router(runner_router)
 app.include_router(audit_router)
 app.include_router(report_router)
+app.include_router(retrieval_router)
 
 
 @app.get("/health")

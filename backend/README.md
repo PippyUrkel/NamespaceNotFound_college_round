@@ -31,6 +31,8 @@ Create a `.env` file with values for:
 - `GET /experiments/{experiment_id}/evidence`
 - `GET /experiments/{experiment_id}/discrepancies`
 - `POST /experiments/{experiment_id}/retrieve`
+  - JSON body: `{"question": "How was the model trained?"}`; defaults to 8 matches (maximum 20).
+  - Optional `top_k` sets the number of matches. Retrieval always searches paper chunks; Groq distinguishes paper-reported facts from clearly labeled inferences based on the paper's method and general knowledge when details are missing.
 
 ## Test with a PDF and GitHub repo
 
@@ -60,6 +62,14 @@ Then fetch the generated experiment JSON:
 
 ```bash
 curl "http://localhost:8000/experiments/{experiment_id}/spec"
+```
+
+Retrieve relevant chunks for a question about that experiment's paper:
+
+```bash
+curl -X POST "http://localhost:8000/experiments/{experiment_id}/retrieve" \
+  -H "Content-Type: application/json" \
+  -d "{\"question\":\"How was the model trained?\"}"
 ```
 
 ## Notes

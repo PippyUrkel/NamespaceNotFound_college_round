@@ -44,7 +44,15 @@ class IngestionService:
         dag = DagBuilder.build()
         dag_validation = DagBuilder.validate(dag)
         chunks = PineconeChunkIndexer.build_chunks(paper_analysis, repo_analysis, experiment_id)
-        pinecone_status = PineconeChunkIndexer.index_chunks(experiment_id, chunks)
+        namespace = PineconeChunkIndexer.namespace_for_paper(
+            paper_analysis.get("hash_sha256"),
+            experiment_id,
+        )
+        pinecone_status = PineconeChunkIndexer.index_chunks(
+            experiment_id,
+            chunks,
+            namespace=namespace,
+        )
 
         result = {
             "experiment_id": experiment_id,

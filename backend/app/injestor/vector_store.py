@@ -19,6 +19,12 @@ except ModuleNotFoundError:  # pragma: no cover
 
 class PineconeChunkIndexer:
     @staticmethod
+    def namespace_for_paper(paper_sha256: str | None, experiment_id: str) -> str:
+        identity = paper_sha256 or experiment_id
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+        return f"paper-{digest}"
+
+    @staticmethod
     def chunk_texts(text: str, *, source: str, experiment_id: str) -> list[dict[str, Any]]:
         cleaned = re.sub(r"\s+", " ", text or "").strip()
         if not cleaned:
@@ -61,12 +67,28 @@ class PineconeChunkIndexer:
         return chunks
 
     @staticmethod
-    def index_chunks(experiment_id: str, chunks: list[dict[str, Any]]) -> dict[str, Any]:
+    def index_chunks(
+        experiment_id: str,
+        chunks: list[dict[str, Any]],
+        *,
+        namespace: str,
+    ) -> dict[str, Any]:
         if not chunks:
-            return {"status": "skipped", "count": 0, "index_name": settings.pinecone_index}
+            return {
+                "status": "skipped",
+                "count": 0,
+                "index_name": settings.pinecone_index,
+                "namespace": namespace,
+            }
         api_key = settings.pinecone_api_key or None
         if not api_key or Pinecone is None:
-            return {"status": "skipped", "count": 0, "index_name": settings.pinecone_index, "reason": "Pinecone is not configured"}
+            return {
+                "status": "skipped",
+                "count": 0,
+                "index_name": settings.pinecone_index,
+                "namespace": namespace,
+                "reason": "Pinecone is not configured",
+            }
 
         model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
         client = Pinecone(api_key=api_key)
@@ -93,5 +115,10 @@ class PineconeChunkIndexer:
                 "metadata": metadata,
             })
         if vectors:
-            index.upsert(vectors=vectors)
-        return {"status": "indexed", "count": len(vectors), "index_name": settings.pinecone_index}
+            index.upsert(vectors=vectors, namespace=namespace)
+        return {
+            "status": "indexed",
+            "count": len(vectors),
+            "index_name": settings.pinecone_index,
+            "namespace": namespace,
+        }
