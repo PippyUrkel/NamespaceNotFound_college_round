@@ -32,6 +32,7 @@ import RunnerTab from './components/RunnerTab';
 import EvidenceTab from './components/EvidenceTab';
 import AuditTab from './components/AuditTab';
 import IngestModal from './components/IngestModal';
+import OverviewTab from './components/OverviewTab';
 import './App.css';
 
 const NAV_GROUPS = [
@@ -60,6 +61,7 @@ const NAV_GROUPS = [
 
 const TAB_LABELS = {
   ingest: 'Overview & Ingestion',
+  overview: 'Experiment overview',
   graph: 'Experiment Graph',
   feasibility: 'Feasibility Assessment',
   runner: 'Execution Runner',
@@ -101,37 +103,35 @@ export default function App() {
     (experiment) => experiment.experiment_id === selectedExpId
   );
 
+
+  const loadExperiments = useCallback(async () => {
+    try {
+      const data = await api.listExperiments();
+      setExperiments(data);
+    } catch (error) {
+      console.error('Failed to load experiments:', error);
+      throw error;
+    }
+  }, []);
+
   const checkHealthAndLoad = useCallback(async () => {
     setApiBaseUrl(backendUrl);
+
     try {
       await api.checkHealth();
       setBackendOnline(true);
-      await loadExperiments();
-    } catch {
-      setBackendOnline(false);
-    }
-  }, [backendUrl]);
-
-  const loadExperiments = useCallback(async () => {
-    setExperimentsLoading(true);
-    try {
-      const list = await api.listExperiments();
-      const safeList = list || [];
-      setExperiments(safeList);
-      // Do not auto-select an experiment: an empty workspace should remain a
-      // genuine landing page until the user chooses or creates an experiment.
-      setSelectedExpId((currentId) => (
-        currentId && safeList.some((item) => item.experiment_id === currentId)
-          ? currentId
-          : ''
-      ));
     } catch (error) {
-      console.warn('Failed to list experiments:', error);
-      setNotice(`Could not load experiments: ${error.message}`);
-    } finally {
-      setExperimentsLoading(false);
+      console.error('Backend health check failed:', error);
+      setBackendOnline(false);
+      return;
     }
-  }, []);
+
+    try {
+      await loadExperiments();
+    } catch (error) {
+      console.error('Failed to load experiments:', error);
+    }
+  }, [backendUrl, loadExperiments]);
 
   const loadExperimentDetails = useCallback(async (expId) => {
     if (!expId) return;
@@ -344,7 +344,7 @@ export default function App() {
                   <span className="status-dot" />
                   {sidebarOpen && <span>{backendOnline ? 'Backend connected' : 'Backend unavailable'}</span>}
                 </div>
-                <button className="sidebar-home-link" onClick={() => handleNavigate('ingest')}>
+                <button className="sidebar-home-link" onClick={() => handleNavigate('overview')}>
                   <LayoutDashboard size={16} />
                   {sidebarOpen && <span>Experiment overview</span>}
                 </button>
@@ -478,6 +478,13 @@ export default function App() {
                     )}
                     {activeTab === 'audit' && (
                       <AuditTab experimentId={selectedExpId} latestExecution={latestExecution} />
+                    )}
+                    {activeTab === 'overview' && (
+                      <OverviewTab
+                        experimentId={selectedExpId}
+                        experiment={selectedExperiment}
+                        spec={spec}
+                      />
                     )}
                   </>
                 )}

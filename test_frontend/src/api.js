@@ -144,4 +144,17 @@ export const api = {
   generateReport: (id) => request(`/experiments/${id}/report`, { method: 'POST' }),
   getReport: (id) => request(`/experiments/${id}/report`),
   getReportMarkdownUrl: (id) => `${API_BASE_URL}/experiments/${id}/report.md`,
+
+  // RAG / Research Chat
+  retrieveResearch: (id, question, topK = 7) =>
+    request(`/experiments/${id}/retrieve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question,
+        top_k: topK,
+      }),
+    }),
+
 };
+
