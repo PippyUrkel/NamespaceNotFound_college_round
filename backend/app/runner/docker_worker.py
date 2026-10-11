@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -50,7 +51,12 @@ class DockerWorker:
         # experiments. Every node re-runs its upstream code, so without this each node re-downloads.
         self._shared_cache_dir = Path(shared_cache_dir or Path(settings.artifacts_dir) / "shared_cache").resolve()
         for sub in ("data", "torch", "huggingface", "pip"):
-            (self._shared_cache_dir / sub).mkdir(parents=True, exist_ok=True)
+            sub_dir = self._shared_cache_dir / sub
+            sub_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                sub_dir.chmod(0o777)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Public API
@@ -328,11 +334,25 @@ class DockerWorker:
         ]
 
         # Inject parameters as variables
+        valid_keys = set()
         for k, v in parameters.items():
-            # Skip metadata keys
-            if k.endswith("_source") or k.endswith("_is_assumed") or k.startswith("seed_audit"):
+            # Skip non-identifiers and metadata keys
+            if not isinstance(k, str) or not k.isidentifier() or k.endswith("_source") or k.endswith("_is_assumed") or k.startswith("seed_audit"):
                 continue
+            valid_keys.add(k)
             lines.append(f"{k} = {repr(v)}")
+
+        # Fallback defaults for common ML hyperparameters if referenced in code but missing from parameters
+        combined_code = f"{upstream_code or ''}\n{code}"
+        standard_fallbacks = {
+            "seed": seed,
+            "batch_size": 64,
+            "learning_rate": 0.001,
+            "epochs": 10,
+        }
+        for var_name, default_val in standard_fallbacks.items():
+            if var_name not in valid_keys and re.search(r"\b" + re.escape(var_name) + r"\b", combined_code):
+                lines.append(f"{var_name} = {repr(default_val)}")
 
         lines.extend([
             "",

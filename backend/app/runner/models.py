@@ -309,6 +309,7 @@ class SubmitExecutionRequest(BaseModel):
     pip_packages: list[str] | None = None
     auto_install_missing: bool = True
     skip_feasibility: bool = False
+    async_run: bool = False
 
 
 class ResumeExecutionRequest(BaseModel):
@@ -317,6 +318,7 @@ class ResumeExecutionRequest(BaseModel):
     additional_seeds: list[int] = Field(default_factory=list)
     pip_packages: list[str] | None = None
     auto_install_missing: bool = True
+    async_run: bool = False
 
 
 class ProgressEvent(BaseModel):

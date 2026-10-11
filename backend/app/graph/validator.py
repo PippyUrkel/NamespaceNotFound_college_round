@@ -503,6 +503,21 @@ class SequentialCodeValidator:
             configured_seed = params.get("seed", 42)
             injections.append(f"seed = globals().get('SEED', {configured_seed})")
 
+        # Missing batch_size
+        if "batch_size" in missing_symbols and "batch_size" not in code:
+            bs = params.get("batch_size", 64)
+            injections.append(f"batch_size = {bs}")
+
+        # Missing learning_rate
+        if "learning_rate" in missing_symbols and "learning_rate" not in code:
+            lr = params.get("learning_rate", 0.001)
+            injections.append(f"learning_rate = {lr}")
+
+        # Missing epochs
+        if "epochs" in missing_symbols and "epochs" not in code:
+            ep = params.get("epochs", 10)
+            injections.append(f"epochs = {ep}")
+
         # Missing MLP model definition
         if "MLP" in missing_symbols and "class MLP" not in code:
             injections.append(

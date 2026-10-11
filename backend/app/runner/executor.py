@@ -188,6 +188,13 @@ class GraphExecutor:
             ]
             upstream_code = "\n\n".join(upstream_code_parts) if upstream_code_parts else None
 
+            # Merge parameters from all ancestor nodes in topological order, then current node
+            merged_parameters: dict[str, Any] = {}
+            for anc_id in execution_order:
+                if anc_id in ancestors and anc_id in node_map:
+                    merged_parameters.update(node_map[anc_id].parameters)
+            merged_parameters.update(node.parameters)
+
             # Execute with retries
             result = self._execute_with_retries(
                 node=node,
@@ -196,6 +203,7 @@ class GraphExecutor:
                 upstream_dir=upstream_dir,
                 max_retries=node_exec_config.max_retries,
                 upstream_code=upstream_code,
+                parameters=merged_parameters,
             )
 
             node_results[node_id] = result
@@ -283,16 +291,18 @@ class GraphExecutor:
         upstream_dir: Path,
         max_retries: int = 1,
         upstream_code: str | None = None,
+        parameters: dict[str, Any] | None = None,
     ) -> NodeRunResult:
         """Execute a node with bounded retries for transient failures."""
         last_result: NodeRunResult | None = None
+        effective_params = parameters if parameters is not None else node.parameters
 
         for attempt in range(max_retries + 1):
             result = self._docker_worker.execute_node(
                 node_id=node.id,
                 code=node.code,
                 seed=seed,
-                parameters=node.parameters,
+                parameters=effective_params,
                 config=config,
                 upstream_outputs_dir=upstream_dir,
                 pip_packages=self._config.pip_packages,

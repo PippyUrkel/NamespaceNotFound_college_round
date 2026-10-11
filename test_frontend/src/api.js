@@ -26,6 +26,11 @@ async function request(endpoint, options = {}) {
     }
     return await res.json();
   } catch (err) {
+    if (err.name === 'TypeError' && String(err.message).toLowerCase().includes('fetch')) {
+      const enhancedErr = new Error(`Network connection error to ${url}. Ensure the backend is running at ${API_BASE_URL}`);
+      console.error(`API Network Error on ${endpoint}:`, enhancedErr);
+      throw enhancedErr;
+    }
     console.error(`API Error on ${endpoint}:`, err);
     throw err;
   }
@@ -99,6 +104,17 @@ export const api = {
     body: JSON.stringify(payload),
   }),
   getEnvironmentBuildProgress: (id) => request(`/experiments/${id}/environment-build-progress`),
+  getDockerfile: (id = null, extraPackages = []) => {
+    if (id) {
+      const params = new URLSearchParams();
+      if (extraPackages && extraPackages.length > 0) {
+        extraPackages.forEach((p) => params.append('extra_packages', p));
+      }
+      const q = params.toString() ? `?${params.toString()}` : '';
+      return request(`/experiments/${id}/dockerfile${q}`);
+    }
+    return request('/experiments/dockerfile');
+  },
 
   // Execution Runner
   submitExecution: (id, payload) => request(`/experiments/${id}/executions`, {

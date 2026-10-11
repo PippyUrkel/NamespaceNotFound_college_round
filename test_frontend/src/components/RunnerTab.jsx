@@ -27,6 +27,7 @@ import {
   Check,
   FileCode,
   Layers,
+  Copy,
 } from 'lucide-react';
 import { api } from '../api';
 import './RunnerTab.css';
@@ -93,6 +94,15 @@ export default function RunnerTab({
   const [newPkgInput, setNewPkgInput] = useState('');
   const [preparingEnv, setPreparingEnv] = useState(false);
   const [prepSuccessMsg, setPrepSuccessMsg] = useState('');
+
+  // Active execution ID for real-time tracking
+  const [activeExecId, setActiveExecId] = useState(null);
+
+  // Dockerfile Modal State for Peers
+  const [showDockerfileModal, setShowDockerfileModal] = useState(false);
+  const [dockerfileData, setDockerfileData] = useState(null);
+  const [loadingDockerfile, setLoadingDockerfile] = useState(false);
+  const [dockerfileCopied, setDockerfileCopied] = useState(false);
 
   // Container Library Installation Progress Tracking
   const [buildProgress, setBuildProgress] = useState(null);
@@ -220,40 +230,59 @@ export default function RunnerTab({
     }
   };
 
+  const handleOpenDockerfile = async () => {
+    setShowDockerfileModal(true);
+    setLoadingDockerfile(true);
+    setDockerfileCopied(false);
+    try {
+      const data = await api.getDockerfile(experimentId, customPackages);
+      setDockerfileData(data);
+    } catch (err) {
+      console.warn('Failed to load Dockerfile:', err);
+    } finally {
+      setLoadingDockerfile(false);
+    }
+  };
+
+  const targetExecId = activeExecId || exec?.execution_id;
+
   useEffect(() => {
     let interval = null;
     let cancelled = false;
 
     if (
-      exec &&
+      targetExecId &&
       (
-        exec.status === 'running' ||
-        exec.status === 'preparing' ||
-        running
+        exec?.status === 'running' ||
+        exec?.status === 'preparing' ||
+        running ||
+        resuming
       )
     ) {
       interval = window.setInterval(async () => {
         try {
           const events = await api.getProgress(
             experimentId,
-            exec.execution_id
+            targetExecId
           );
 
-          if (!cancelled) {
-            setProgressEvents(events || []);
+          if (!cancelled && events) {
+            setProgressEvents(events);
           }
 
           const updated = await api.getExecution(
             experimentId,
-            exec.execution_id
+            targetExecId
           );
 
           if (
             !cancelled &&
+            updated &&
             updated.status !== 'running' &&
             updated.status !== 'preparing'
           ) {
             setRunning(false);
+            setResuming(false);
             window.clearInterval(interval);
           }
 
@@ -273,7 +302,7 @@ export default function RunnerTab({
         } catch (error) {
           console.warn('Progress poll error:', error);
         }
-      }, 2000);
+      }, 1500);
     }
 
     return () => {
@@ -285,9 +314,10 @@ export default function RunnerTab({
     };
   }, [
     experimentId,
-    exec?.execution_id,
+    targetExecId,
     exec?.status,
     running,
+    resuming,
     onRefreshExecution,
   ]);
 
@@ -334,9 +364,13 @@ export default function RunnerTab({
           default_cpu_limit: cpu,
         },
         skip_feasibility: false,
+        async_run: true,
       };
 
-      await api.submitExecution(experimentId, payload);
+      const res = await api.submitExecution(experimentId, payload);
+      if (res?.execution_id) {
+        setActiveExecId(res.execution_id);
+      }
       onRefreshExecution();
     } catch (err) {
       setRunning(false);
@@ -353,23 +387,25 @@ export default function RunnerTab({
     setResuming(true);
 
     try {
-      await api.resumeExecution(
+      const res = await api.resumeExecution(
         experimentId,
         exec.execution_id,
         {
           retry_failed: true,
           additional_seeds: [],
           pip_packages: customPackages,
+          async_run: true,
         }
       );
-
+      if (res?.execution_id) {
+        setActiveExecId(res.execution_id);
+      }
       onRefreshExecution();
     } catch (err) {
+      setResuming(false);
       setActionError(
         `Resume failed: ${err?.message || 'Unknown error'}`
       );
-    } finally {
-      setResuming(false);
     }
   }
 
@@ -389,24 +425,26 @@ export default function RunnerTab({
     });
 
     try {
-      await api.resumeExecution(
+      const res = await api.resumeExecution(
         experimentId,
         exec.execution_id,
         {
           retry_failed: true,
           additional_seeds: [],
           pip_packages: customPackages,
+          async_run: true,
         }
       );
-
+      if (res?.execution_id) {
+        setActiveExecId(res.execution_id);
+      }
       onRefreshExecution();
       fetchEnvPreview(customPackages);
     } catch (err) {
+      setResuming(false);
       setActionError(
         `Restart failed: ${err?.message || 'Unknown error'}`
       );
-    } finally {
-      setResuming(false);
     }
   }
 
@@ -477,6 +515,15 @@ export default function RunnerTab({
           </div>
 
           <div className="cg-runner-main-actions">
+            <button
+              type="button"
+              className="cg-runner-button cg-runner-button-secondary"
+              onClick={handleOpenDockerfile}
+            >
+              <FileCode size={14} />
+              View Dockerfile
+            </button>
+
             <button
               type="button"
               className="cg-runner-button cg-runner-button-secondary"
@@ -1515,6 +1562,116 @@ export default function RunnerTab({
                 onClick={() => setSelectedNodeLogs(null)}
               >
                 Close logs
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+      {showDockerfileModal && (
+        <div
+          className="cg-runner-log-overlay"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setShowDockerfileModal(false);
+            }
+          }}
+        >
+          <section
+            className="cg-runner-log-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cg-runner-dockerfile-title"
+            style={{ maxWidth: '820px' }}
+          >
+            <header className="cg-runner-log-header">
+              <div className="cg-runner-title-group">
+                <span className="cg-runner-icon-box cg-runner-icon-cyan">
+                  <FileCode size={17} />
+                </span>
+
+                <div>
+                  <div className="cg-runner-kicker">CONTAINER SETUP &amp; DOCKERFILE</div>
+
+                  <h2 id="cg-runner-dockerfile-title">
+                    Reproducible Base Image · crisisgrid-ml-base:latest
+                  </h2>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  className="cg-runner-button cg-runner-button-secondary"
+                  onClick={() => {
+                    if (dockerfileData?.dockerfile) {
+                      navigator.clipboard.writeText(dockerfileData.dockerfile);
+                      setDockerfileCopied(true);
+                      setTimeout(() => setDockerfileCopied(false), 2000);
+                    }
+                  }}
+                >
+                  {dockerfileCopied ? <Check size={14} /> : <Copy size={14} />}
+                  {dockerfileCopied ? 'Copied Dockerfile!' : 'Copy Dockerfile'}
+                </button>
+
+                <button
+                  type="button"
+                  className="cg-runner-button cg-runner-button-secondary"
+                  onClick={() => {
+                    const cmd = dockerfileData?.build_command || 'docker build -t crisisgrid-ml-base:latest .';
+                    navigator.clipboard.writeText(cmd);
+                    alert('Copied build command to clipboard:\n' + cmd);
+                  }}
+                >
+                  <Terminal size={14} />
+                  Copy Build Command
+                </button>
+
+                <button
+                  type="button"
+                  className="cg-runner-close"
+                  onClick={() => setShowDockerfileModal(false)}
+                  aria-label="Close Dockerfile modal"
+                >
+                  <X size={17} />
+                </button>
+              </div>
+            </header>
+
+            <div className="cg-runner-log-content">
+              <div style={{ padding: '12px 14px', background: 'rgba(56, 189, 248, 0.08)', borderRadius: '8px', border: '1px solid rgba(56, 189, 248, 0.2)', marginBottom: '14px' }}>
+                <div style={{ fontSize: '13px', fontWeight: 600, color: '#38bdf8', marginBottom: '4px' }}>
+                  Peer Container Setup:
+                </div>
+                <div style={{ fontSize: '12px', color: '#cbd5e1', lineHeight: '1.5' }}>
+                  If peer containers crash or fail with missing images, place this <code>Dockerfile</code> at the repository root and execute the build command below:
+                </div>
+                <div style={{ marginTop: '8px', background: '#090d16', padding: '8px 12px', borderRadius: '6px', fontFamily: 'monospace', fontSize: '12px', color: '#6ee7b7' }}>
+                  {dockerfileData?.build_command || 'docker build -t crisisgrid-ml-base:latest .'}
+                </div>
+              </div>
+
+              {loadingDockerfile ? (
+                <div style={{ padding: '40px', textAlign: 'center', color: '#94a3b8', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                  <Loader2 size={18} className="cg-runner-spin" />
+                  Generating Dockerfile...
+                </div>
+              ) : (
+                <div className="cg-runner-log-block">
+                  <div className="cg-runner-log-label is-stdout">DOCKERFILE</div>
+                  <pre style={{ maxHeight: '420px', overflow: 'auto' }}>{dockerfileData?.dockerfile}</pre>
+                </div>
+              )}
+            </div>
+
+            <footer className="cg-runner-log-footer">
+              <button
+                type="button"
+                className="cg-runner-button cg-runner-button-secondary"
+                onClick={() => setShowDockerfileModal(false)}
+              >
+                Close
               </button>
             </footer>
           </section>

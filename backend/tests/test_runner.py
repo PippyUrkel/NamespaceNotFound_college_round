@@ -794,4 +794,78 @@ def test_environment_build_progress_tracking_and_single_default_seed(test_env, m
     assert async_data["status"] == "building"
 
 
+# ---------------------------------------------------------------------------
+# Test 16: Dockerfile Generation and Peer Environment Endpoints
+# ---------------------------------------------------------------------------
+def test_dockerfile_generation_and_export(tmp_path) -> None:
+    # 1. generate_dockerfile
+    content = EnvironmentManager.generate_dockerfile(extra_packages=["scikit-learn"])
+    assert "crisisgrid-ml-base:latest" in content
+    assert "pip install --no-cache-dir scikit-learn" in content
+
+    # 2. export_dockerfile
+    target_file = tmp_path / "Dockerfile.test"
+    exported = EnvironmentManager.export_dockerfile(target_file)
+    assert exported.exists()
+    assert "FROM python:3.11-slim" in exported.read_text()
+
+    # 3. routes
+    client = TestClient(app)
+    res = client.get("/experiments/dockerfile")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["image_tag"] == "crisisgrid-ml-base:latest"
+    assert "docker build -t crisisgrid-ml-base:latest ." in data["build_command"]
+    assert "FROM python:3.11-slim" in data["dockerfile"]
+
+    # 4. experiment specific dockerfile
+    res_exp = client.get("/experiments/exp-123/dockerfile?extra_packages=xgboost")
+    assert res_exp.status_code == 200
+    exp_data = res_exp.json()
+    assert "pip install --no-cache-dir xgboost" in exp_data["dockerfile"]
+
+
+# ---------------------------------------------------------------------------
+# Test 17: Parameter Chaining and Common Hyperparameter Fallbacks
+# ---------------------------------------------------------------------------
+def test_parameter_chaining_and_fallbacks_in_docker_worker(tmp_path) -> None:
+    worker = DockerWorker(work_dir=tmp_path)
+    # Script where batch_size and learning_rate are referenced in code
+    user_code = "loader = DataLoader(dataset, batch_size=batch_size)\nopt = Adam(lr=learning_rate)"
+    upstream_code = "# Upstream data\nseed_val = seed"
+    parameters = {"dataset": "cifar10"}
+
+    script = worker._build_runner_script(
+        node_id="training_pipeline",
+        code=user_code,
+        seed=101,
+        parameters=parameters,
+        upstream_code=upstream_code,
+    )
+    # Check that batch_size and learning_rate fallbacks were injected
+    assert "batch_size = 64" in script
+    assert "learning_rate = 0.001" in script
+    assert "seed = 101" in script
+    assert "dataset = 'cifar10'" in script
+
+
+# ---------------------------------------------------------------------------
+# Test 18: Async Execution Launch Pattern
+# ---------------------------------------------------------------------------
+def test_async_run_execution_submission(test_env) -> None:
+    service = test_env["service"]
+    exp_id = test_env["experiment_id"]
+    req = SubmitExecutionRequest(
+        seeds=[42],
+        skip_feasibility=True,
+        async_run=True,
+    )
+    manifest = service.submit_execution(exp_id, req)
+    assert manifest is not None
+    assert manifest.execution_id.startswith("exec_")
+    assert manifest.status in (ExecutionStatus.running, ExecutionStatus.completed)
+    assert manifest.started_at is not None
+
+
+
 

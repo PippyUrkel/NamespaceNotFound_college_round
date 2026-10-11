@@ -32,6 +32,36 @@ router = APIRouter(prefix="/experiments", tags=["runner"])
 service = RunnerService()
 
 
+@router.get("/dockerfile")
+def get_default_dockerfile() -> dict[str, Any]:
+    """Get the standard reproducible Dockerfile and container setup instructions for peers."""
+    content = EnvironmentManager.generate_dockerfile()
+    return {
+        "dockerfile": content,
+        "filename": "Dockerfile",
+        "image_tag": "crisisgrid-ml-base:latest",
+        "build_command": "docker build -t crisisgrid-ml-base:latest .",
+        "description": "Standard reproducible Docker container environment with PyTorch (CPU), NumPy, Scipy, Scikit-learn, Pandas, Pillow, and Psutil pre-installed.",
+    }
+
+
+@router.get("/{experiment_id}/dockerfile")
+def get_experiment_dockerfile(
+    experiment_id: str,
+    extra_packages: list[str] = Query(default=[]),
+) -> dict[str, Any]:
+    """Get a custom Dockerfile tailored to the specific experiment's dependencies for peers."""
+    content = EnvironmentManager.generate_dockerfile(extra_packages=extra_packages)
+    return {
+        "experiment_id": experiment_id,
+        "dockerfile": content,
+        "filename": "Dockerfile",
+        "image_tag": "crisisgrid-ml-base:latest",
+        "build_command": "docker build -t crisisgrid-ml-base:latest .",
+        "extra_packages": extra_packages,
+    }
+
+
 @router.get("/{experiment_id}/environment-preview", response_model=EnvironmentPreview)
 def get_experiment_environment_preview(
     experiment_id: str,

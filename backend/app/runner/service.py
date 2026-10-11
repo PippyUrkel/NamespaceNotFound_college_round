@@ -7,6 +7,7 @@ API consumed by the routes module.
 from __future__ import annotations
 
 import json
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -187,17 +188,6 @@ class RunnerService:
                 )
             )
 
-        # Ensure all dependencies are installed in Docker image BEFORE containers start executing
-        prepared_image = EnvironmentManager.prepare_image(
-            packages=required_pkgs,
-            base_image=config.docker_image,
-            experiment_id=experiment_id,
-            on_progress=on_build_progress,
-        )
-        config.docker_image = prepared_image
-        if self._docker_worker:
-            self._docker_worker._docker_image = prepared_image
-
         # Validate graph sequentially and auto-remediate safe missing declarations (device, seed, imports)
         try:
             from backend.app.graph.validator import SequentialCodeValidator
@@ -244,50 +234,67 @@ class RunnerService:
             dataset_identity=dataset_identity,
             feasibility=feasibility,
             hardware=feasibility.resource_assessment if feasibility else FeasibilityChecker._assess_resources(),
-            status=ExecutionStatus.preparing,
+            status=ExecutionStatus.running,
             created_at=datetime.now(timezone.utc).isoformat(),
+            started_at=datetime.now(timezone.utc).isoformat(),
         )
 
         # Create seed runs
         manifest.seed_runs = SeedCoordinator.create_seed_runs(seeds)
-
-        # Set up execution infrastructure
-        work_dir = self._get_work_dir(experiment_id, execution_id)
-        cache_dir = self._artifacts_dir / "experiments" / experiment_id / "cache"
-        cache = ExecutionCache(cache_dir)
-
-        executor = GraphExecutor(
-            work_dir=work_dir,
-            cache=cache,
-            docker_worker=self._docker_worker,
-            config=config,
-            on_progress=on_progress,
-        )
-        self._active_executors[execution_id] = executor
-
-        # Execute
-        manifest.status = ExecutionStatus.running
-        manifest.started_at = datetime.now(timezone.utc).isoformat()
         self._results.save_manifest(manifest)
 
-        for i, seed_run in enumerate(manifest.seed_runs):
-            if executor._cancelled:
-                seed_run.status = RunStatus.cancelled
-                continue
+        def _run_execution_steps():
+            try:
+                # Ensure all dependencies are installed in Docker image BEFORE containers start executing
+                prepared_image = EnvironmentManager.prepare_image(
+                    packages=required_pkgs,
+                    base_image=config.docker_image,
+                    experiment_id=experiment_id,
+                    on_progress=on_build_progress,
+                )
+                config.docker_image = prepared_image
+                manifest.config.docker_image = prepared_image
+                manifest.docker_image_digest = f"{prepared_image}@pinned"
+                if self._docker_worker:
+                    self._docker_worker._docker_image = prepared_image
 
-            result = executor.execute_seed(graph, seed_run.seed)
-            manifest.seed_runs[i] = result
+                # Set up execution infrastructure
+                work_dir = self._get_work_dir(experiment_id, execution_id)
+                cache_dir = self._artifacts_dir / "experiments" / experiment_id / "cache"
+                cache = ExecutionCache(cache_dir)
 
-            # Save intermediate progress
-            self._results.save_manifest(manifest)
+                executor = GraphExecutor(
+                    work_dir=work_dir,
+                    cache=cache,
+                    docker_worker=self._docker_worker,
+                    config=config,
+                    on_progress=on_progress,
+                )
+                self._active_executors[execution_id] = executor
 
-        # Finalize
-        manifest = self._results.finalize_manifest(manifest)
+                for i, seed_run in enumerate(manifest.seed_runs):
+                    if executor._cancelled:
+                        seed_run.status = RunStatus.cancelled
+                        continue
 
-        # Cleanup
-        self._active_executors.pop(execution_id, None)
+                    result = executor.execute_seed(graph, seed_run.seed)
+                    manifest.seed_runs[i] = result
 
-        return manifest
+                    # Save intermediate progress
+                    self._results.save_manifest(manifest)
+
+                # Finalize
+                final_manifest = self._results.finalize_manifest(manifest)
+                return final_manifest
+            finally:
+                self._active_executors.pop(execution_id, None)
+
+        if getattr(request, "async_run", False):
+            thread = threading.Thread(target=_run_execution_steps, daemon=True)
+            thread.start()
+            return manifest
+        else:
+            return _run_execution_steps()
 
     # ------------------------------------------------------------------
     # Status / results
@@ -423,44 +430,58 @@ class RunnerService:
                 )
             )
 
-        # Ensure dependencies image is prepared before resuming
-        prepared_image = EnvironmentManager.prepare_image(
-            packages=manifest.config.pip_packages,
-            base_image=manifest.config.docker_image,
-            experiment_id=experiment_id,
-            on_progress=on_build_progress,
-        )
-        manifest.config.docker_image = prepared_image
-        if self._docker_worker:
-            self._docker_worker._docker_image = prepared_image
-
-        # Set up executor
-        work_dir = self._get_work_dir(experiment_id, execution_id)
-        cache_dir = self._artifacts_dir / "experiments" / experiment_id / "cache"
-        cache = ExecutionCache(cache_dir)
-
-        executor = GraphExecutor(
-            work_dir=work_dir,
-            cache=cache,
-            docker_worker=self._docker_worker,
-            config=manifest.config,
-            on_progress=on_progress,
-        )
-        self._active_executors[execution_id] = executor
-
         manifest.status = ExecutionStatus.running
+        self._results.save_manifest(manifest)
 
-        # Re-run the seeds
-        for i, sr in enumerate(manifest.seed_runs):
-            if sr.seed in seeds_to_run:
-                result = executor.execute_seed(graph, sr.seed)
-                manifest.seed_runs[i] = result
+        def _run_resume_steps():
+            try:
+                # Ensure dependencies image is prepared before resuming
+                prepared_image = EnvironmentManager.prepare_image(
+                    packages=manifest.config.pip_packages,
+                    base_image=manifest.config.docker_image,
+                    experiment_id=experiment_id,
+                    on_progress=on_build_progress,
+                )
+                manifest.config.docker_image = prepared_image
+                if self._docker_worker:
+                    self._docker_worker._docker_image = prepared_image
 
-        # Finalize
-        manifest = self._results.finalize_manifest(manifest)
-        self._active_executors.pop(execution_id, None)
+                # Set up executor
+                work_dir = self._get_work_dir(experiment_id, execution_id)
+                cache_dir = self._artifacts_dir / "experiments" / experiment_id / "cache"
+                cache = ExecutionCache(cache_dir)
 
-        return manifest
+                executor = GraphExecutor(
+                    work_dir=work_dir,
+                    cache=cache,
+                    docker_worker=self._docker_worker,
+                    config=manifest.config,
+                    on_progress=on_progress,
+                )
+                self._active_executors[execution_id] = executor
+
+                # Re-run the seeds
+                for i, sr in enumerate(manifest.seed_runs):
+                    if executor._cancelled:
+                        sr.status = RunStatus.cancelled
+                        continue
+                    if sr.seed in seeds_to_run:
+                        result = executor.execute_seed(graph, sr.seed)
+                        manifest.seed_runs[i] = result
+                        self._results.save_manifest(manifest)
+
+                # Finalize
+                final_manifest = self._results.finalize_manifest(manifest)
+                return final_manifest
+            finally:
+                self._active_executors.pop(execution_id, None)
+
+        if getattr(request, "async_run", False):
+            thread = threading.Thread(target=_run_resume_steps, daemon=True)
+            thread.start()
+            return manifest
+        else:
+            return _run_resume_steps()
 
     # ------------------------------------------------------------------
     # Evidence for audit

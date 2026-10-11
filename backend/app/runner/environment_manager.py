@@ -423,6 +423,157 @@ class EnvironmentManager:
                 pass
 
     @classmethod
+    def generate_dockerfile(
+        cls,
+        extra_packages: list[str] | None = None,
+        base_image: str = "python:3.11-slim",
+    ) -> str:
+        """Generate a complete, reproducible Dockerfile for the CrisisGrid ML execution environment."""
+        extra_run = ""
+        if extra_packages:
+            pkg_str = " ".join(extra_packages)
+            extra_run = f"\n# Install extra experiment packages\nRUN pip install --no-cache-dir {pkg_str}\n"
+
+        return f"""# CrisisGrid Reproducible ML Execution Environment
+# Base container image: crisisgrid-ml-base:latest
+#
+# Build with:
+#   docker build -t crisisgrid-ml-base:latest .
+
+FROM {base_image}
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    PYTHONUNBUFFERED=1 \\
+    PYTHONDONTWRITEBYTECODE=1 \\
+    PIP_NO_CACHE_DIR=1 \\
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \\
+    TORCH_HOME=/cache/torch \\
+    HF_HOME=/cache/huggingface \\
+    PIP_CACHE_DIR=/cache/pip
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    build-essential \\
+    curl \\
+    git \\
+    libgomp1 \\
+    ca-certificates \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /workspace /workspace/data /workspace/output /cache /cache/pip /cache/torch /cache/huggingface /cache/data && \\
+    chmod -R 777 /workspace /cache
+
+WORKDIR /workspace
+
+RUN pip install --no-cache-dir \\
+    torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+RUN pip install --no-cache-dir \\
+    numpy \\
+    scipy \\
+    scikit-learn \\
+    pandas \\
+    pillow \\
+    psutil \\
+    sympy \\
+    networkx \\
+    jinja2 \\
+    requests \\
+    tqdm \\
+    fsspec \\
+    filelock
+{extra_run}
+RUN chmod -R 777 /workspace /cache
+
+CMD ["python3", "-c", "import torch, torchvision, numpy, sklearn, scipy, pandas, psutil; print('CrisisGrid ML Base container image is ready and verified!')"]
+"""
+
+    @classmethod
+    def export_dockerfile(cls, output_path: Path | str | None = None) -> Path:
+        """Export the Dockerfile to disk so users and peers can build containers without issues."""
+        if output_path:
+            p = Path(output_path).resolve()
+        else:
+            p = Path("/home/andre/Desktop/devwork2026/Hackathons/NamespaceNotFound_college_round/Dockerfile").resolve()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        content = cls.generate_dockerfile()
+        p.write_text(content, encoding="utf-8")
+        return p
+
+    @classmethod
+    def ensure_base_image(
+        cls,
+        base_image: str = "crisisgrid-ml-base:latest",
+        experiment_id: str | None = None,
+        on_progress: Callable[[int, str, str], None] | None = None,
+    ) -> str:
+        """Ensure crisisgrid-ml-base:latest exists, building it if missing so peers never crash."""
+        if not cls._is_docker_available():
+            return "python:3.11-slim"
+
+        if cls._docker_image_exists(base_image):
+            return base_image
+
+        if base_image != "crisisgrid-ml-base:latest" and cls._docker_image_exists(base_image):
+            return base_image
+
+        cls._record_progress(
+            experiment_id=experiment_id,
+            status="building",
+            step=f"Auto-building base image {base_image} from Dockerfile for peer setup...",
+            pct=10,
+            log_line=f"[Base Build] '{base_image}' not found locally. Initiating automatic base container build...",
+            docker_image=base_image,
+            on_progress=on_progress,
+        )
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                dockerfile_file = Path(tmp_dir) / "Dockerfile"
+                dockerfile_file.write_text(cls.generate_dockerfile(), encoding="utf-8")
+
+                cmd = ["docker", "build", "--progress=plain", "-t", base_image, tmp_dir]
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    universal_newlines=True,
+                    bufsize=1,
+                )
+
+                if process.stdout:
+                    for line in iter(process.stdout.readline, ""):
+                        line_clean = line.strip()
+                        if not line_clean:
+                            continue
+                        cls._record_progress(
+                            experiment_id=experiment_id,
+                            status="building",
+                            step="Building base container image...",
+                            pct=40,
+                            log_line=line_clean,
+                            docker_image=base_image,
+                            on_progress=on_progress,
+                        )
+
+                process.wait()
+                if process.returncode == 0:
+                    cls._record_progress(
+                        experiment_id=experiment_id,
+                        status="completed",
+                        step=f"Successfully built base container {base_image}",
+                        pct=100,
+                        log_line=f"[Base Build] Successfully built and tagged {base_image}.",
+                        docker_image=base_image,
+                        on_progress=on_progress,
+                    )
+                    return base_image
+                else:
+                    return "python:3.11-slim"
+        except Exception as exc:
+            print(f"[EnvironmentManager] Error building base image: {exc}", flush=True)
+            return "python:3.11-slim"
+
+    @classmethod
     def prepare_image(
         cls,
         packages: list[str],
@@ -467,6 +618,9 @@ class EnvironmentManager:
 
         # Check if crisisgrid-ml-base:latest is already available and satisfies requirements
         ml_base_exists = cls._docker_image_exists("crisisgrid-ml-base:latest")
+        if not ml_base_exists and cls._is_docker_available():
+            cls.ensure_base_image("crisisgrid-ml-base:latest", experiment_id=experiment_id, on_progress=on_progress)
+            ml_base_exists = cls._docker_image_exists("crisisgrid-ml-base:latest")
 
         # If base image exists and all required packages are pre-installed in it
         if ml_base_exists and normalized_pkgs.issubset(cls.PREINSTALLED_ML_PACKAGES):
@@ -502,13 +656,16 @@ class EnvironmentManager:
 
         # Build image with pre-installed packages
         try:
-            parent_image = "crisisgrid-ml-base:latest" if ml_base_exists else base_image
-            pkgs_to_install = [
-                p for p in sorted_pkgs
-                if not (ml_base_exists and re.split(r"[=><~!]", p)[0].lower() in cls.PREINSTALLED_ML_PACKAGES)
-            ]
+            parent_image = "crisisgrid-ml-base:latest" if ml_base_exists else "python:3.11-slim"
+            if ml_base_exists:
+                pkgs_to_install = [
+                    p for p in sorted_pkgs
+                    if re.split(r"[=><~!]", p)[0].lower() not in cls.PREINSTALLED_ML_PACKAGES
+                ]
+            else:
+                pkgs_to_install = sorted_pkgs
 
-            if not pkgs_to_install:
+            if not pkgs_to_install and ml_base_exists:
                 cls._record_progress(
                     experiment_id=experiment_id,
                     status="completed",
@@ -538,8 +695,14 @@ class EnvironmentManager:
 
                 lines = [
                     f"FROM {parent_image}",
-                    f"RUN pip install --no-cache-dir {pkg_str}",
+                    "ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 TORCH_HOME=/cache/torch HF_HOME=/cache/huggingface PIP_CACHE_DIR=/cache/pip",
+                    "RUN mkdir -p /workspace /cache /cache/pip /cache/torch /cache/huggingface /cache/data && chmod -R 777 /workspace /cache",
+                    "WORKDIR /workspace",
                 ]
+                if parent_image != "crisisgrid-ml-base:latest":
+                    lines.append("RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu || true")
+                lines.append(f"RUN pip install --no-cache-dir {pkg_str}")
+                lines.append("RUN chmod -R 777 /workspace /cache")
                 dockerfile_path.write_text("\n".join(lines), encoding="utf-8")
 
                 cls._record_progress(
